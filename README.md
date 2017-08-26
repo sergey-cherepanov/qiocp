@@ -7,11 +7,12 @@ qiocp is a windows ftp server sample to perform asynchronous operations in synch
 
 ## Features
 
-1. Only one thread. You can use different pools for different purposes.
-2. No mutexs. No synchronization.
+1. Only one thread.
+2. No mutexs. No synchronization. No security.
 3. Basic network support.
 4. UTF-8 messages. Please, set Lucida Console font in console properties.
 5. Passive mode only.
+6. For personal use with Totalcmd client.
 
 Some of the ideas was inspired by fashion on coroutine implemention in future c++.
 
@@ -23,5 +24,5 @@ Some of the ideas was inspired by fashion on coroutine implemention in future c+
 
 MinGW version runs faster.
 
-#References
+# References
 Stackless coroutine macro idea is described in http://www.chiark.greenend.org.uk/~sgtatham/coroutines.html
