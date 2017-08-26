@@ -683,6 +683,12 @@ CMD(CWD)
 
 	makePath(ss, path, utf8);
 	if (FILE_ATTRIBUTE_DIRECTORY & GetFileAttributes(path)){
+		wchar_t *p;
+		for (p = path; *p; ++p){
+			if (L'/' == *p){
+				*p = L'\\';
+			}
+		}
 		wcscpy(ss->sCurrPath, path);
 		send_msg(ss->conn, "250 CWD successful. \"%s\" is current directory.\r\n", utf8);
 	}
