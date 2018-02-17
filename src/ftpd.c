@@ -25,9 +25,11 @@
 #include <time.h>
 #include <stddef.h>
 
-#include "oelog.h"
 #include "networking.h"
+#include "oelog.h"
 #include "ftpd.h"
+#include "security.h"
+
 
 #define CMD(A) en##A,
 #define CMD_LIST \
@@ -68,7 +70,8 @@ CMD(MDTM) /* MDTM <SP> <pathname> <CRLF> */ \
 CMD(OPTS) /* OPTS <SP> <option> <value> <CRLF> */ \
 CMD(SITE) /* SITE <SP> <string> <CRLF> */ \
 CMD(HELP) /* HELP [<SP> <string>] <CRLF> */ \
-
+CMD(CLNT) /* CLNT <SP> <string> <CRLF> */ \
+	
 #if 0L /* TODO */ 
 
 CMD(SMNT) /* SMNT <SP> <pathname> <CRLF> */ \
@@ -81,6 +84,17 @@ CMD(ALLO) /* ALLO <SP> <decimal-integer> [<SP> R <SP> <decimal-integer>] <CRLF> 
 
 enum cmnd { enNotCmnd=-1, CMD_LIST };
 typedef enum cmnd CmndT;
+
+typedef enum client clientT;
+const char sUndef[] = "Undef";
+const char sTotalCommander[] = "Total Commander";
+
+const struct clients{
+	clientT clnt; const char * const sClient;
+} clients[] = { 
+	{ Undef, sUndef },
+	{ TotalCommander, sTotalCommander } 
+};
 
 void getAccept(connection_t *ss, IN_ADDR peer, USHORT port)
 {
@@ -121,7 +135,7 @@ void send_msg(connection_t *conn, const char *format, ...)
 	if (SOCKET_ERROR == WSASend(conn->ox.fd, &po->wb, 1, &conn->BytesSEND,
 		Flags, &po->ov, NULL))
 	{
-		ChkExit(ERROR_IO_PENDING == errno, close_conn(conn); break);
+		ChkExit(ERROR_IO_PENDING == WSAGetLastError(), close_conn(conn); break);
 	}
 	else
 	{
@@ -133,29 +147,37 @@ void send_msg(connection_t *conn, const char *format, ...)
 #undef CMD
 #define CMD(A) void ftpdCmnd_##A(Session *ss)
 
-
-void makePath(Session *ss, wchar_t path[], char utf8[])
+void makePathW(Session *ss, wchar_t path[])
 {
-	wchar_t *pw;
 	size_t len = 0;
 	if ('/' != ss->u8opts[0])
 	{
 		len = wcslen(ss->sCurrPath);
 		wcscpy(path, ss->sCurrPath);
 		{
-			if (L'\\' != path[len - 1] && L'/' != path[len - 1]){
-				path[len] = L'/';
+			switch (path[len - 1]){
+			case L'\\':break;
+			case L'/': path[len - 1] = L'\\'; break;
+			default:
+				path[len] = L'\\';
 				path[++len] = 0;
 			}
 		}
 	}
 	ChkExit(MultiByteToWideChar(CP_UTF8, 0, ss->u8opts, -1, path + len, MAX_PATH - (int)len));
-	for (pw = path; *pw && pw < path + MAX_PATH; ++pw){
+}
+
+
+void makePath(Session *ss, wchar_t path[], char utf8[])
+{
+	char *pw;
+	makePathW(ss, path);
+	ChkExit(WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8 , 2 * MAX_PATH, 0, 0));
+	for (pw = utf8; *pw && pw < utf8 + 2*MAX_PATH; ++pw){
 		if ('\\' == *pw){
 			*pw = '/';
 		}
 	}
-	ChkExit(WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, 2 * MAX_PATH, 0, 0));
 }
 
 CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
@@ -163,21 +185,27 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 	DWORD cbWritten = 0;
 #define STOR_BLOCK	0x80000
 	crBegin;
+
+	send_msg(ss->conn, "125 Data connection already open; transfer starting.\r\n");
+	while (!ss->sdt){
+		crReturn;
+	}
 	{
 		char utf8[2 * MAX_PATH];
 		wchar_t path[MAX_PATH];
 
 		makePath(ss, path, utf8);
 		print_debug("STOR file %s\n", utf8);
-		ChkExit(INVALID_HANDLE_VALUE != (ss->handle = CreateFile(path, GENERIC_WRITE, 0, NULL,
-			CREATE_ALWAYS, FILE_FLAG_OVERLAPPED, 0)));
+		ChkExit(ImpersonateLoggedOnUser(ss->phToken));
+		if (INVALID_HANDLE_VALUE == (ss->handle = CreateFile(path, GENERIC_WRITE, 0, NULL,
+			CREATE_ALWAYS, FILE_FLAG_OVERLAPPED, 0))){
+			send_msg(ss->conn, "451 Requested action aborted. Local error in processing.\r\n");
+			RevertToSelf();
+			goto Finally;
+		}
+		RevertToSelf();
 	}
 	ChkExit(CreateIoCompletionPort(ss->handle, ep_fd, (ULONG_PTR)ss, 0));
-
-	send_msg(ss->conn, "125 Data connection already open; transfer starting.\r\n");
-	while (!ss->sdt){
-		crReturn;
-	}
 
 	ss->sdt->ovs.ov.Offset = 0; ss->sdt->ovs.ov.OffsetHigh = 0;
 	ss->sdt->wb.buf = malloc(STOR_BLOCK);
@@ -190,7 +218,7 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 			if (SOCKET_ERROR == WSARecv(ss->sdt->ox.fd, &ss->sdt->wb, 1, &ss->sdt->recvLen,
 				&Flags, &ss->sdt->ox.ov, NULL))
 			{
-				ChkExit(ERROR_IO_PENDING == errno, CloseHandle(ss->handle));
+				ChkExit(ERROR_IO_PENDING == WSAGetLastError(), CloseHandle(ss->handle));
 			}
 			else
 			{
@@ -198,7 +226,7 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 				/*if (!WriteFile(ss->handle, ss->sdt->wb.buf, ss->sdt->recvLen, &ss->sdt->recvLen,
 					&ss->sdt->ox.ov))
 					{
-					ChkExit(ERROR_IO_PENDING == errno, close_conn(ss->sdt));
+					ChkExit(ERROR_IO_PENDING == GetLastError(), close_conn(ss->sdt));
 					}
 					else
 					{
@@ -215,7 +243,7 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 		if (!WriteFile(ss->handle, ss->sdt->wb.buf, ss->sdt->recvLen, &cbWritten,
 			&ss->sdt->ox.ov))
 		{
-			ChkExit(ERROR_IO_PENDING == errno, close_conn(ss->sdt));
+			ChkExit(ERROR_IO_PENDING == GetLastError(), close_conn(ss->sdt));
 		}
 		else
 		{
@@ -235,9 +263,11 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 	free(ss->sdt->wb.buf); ss->sdt->wb.buf = 0;
 
 	ChkExit(CloseHandle(ss->handle));
+	ss->handle = INVALID_HANDLE_VALUE;
+	send_msg(ss->conn, "226 Transfer complete\r\n");
+Finally:
 	ss->sdt->ox.ov.Offset = 0; ss->sdt->ox.ov.OffsetHigh = 0;
 	close_conn(ss->sdt);  ss->sdt = 0;
-	send_msg(ss->conn, "226 Transfer complete\r\n");
 	crFinish;
 }
 
@@ -246,26 +276,31 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 #define BLOCK_SIZE	0x8000
 	{
 		crBegin;
+		while (!ss->sdt){
+			crReturn;
+		}
+		ss->sdt->ovs.ov.Offset = 0; ss->sdt->ovs.ov.OffsetHigh = 0;
+		send_msg(ss->conn, "125 Data connection already open; transfer starting.\r\n");
 		{
 			char utf8[2 * MAX_PATH];
 			wchar_t path[MAX_PATH];
 
 			makePath(ss, path, utf8);
 			print_debug("retr file %s\n", utf8);
-			ChkExit(INVALID_HANDLE_VALUE != (ss->handle = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-					OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0)),
-				send_msg(ss->conn, "450 Requested file action not taken. File unavailable(e.g., file busy).\r\n");
-				crBreak;
-			);
+			ChkExit(ImpersonateLoggedOnUser(ss->phToken));
+
+			CHECK_ERR(INVALID_HANDLE_VALUE != (ss->handle = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+				OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0)),
+				RevertToSelf();
+				switch (ierr){ case 5:
+				send_msg(ss->conn, "450 Requested file action not taken. Access denied.\r\n");
+				goto Finally; },
+				exit(ierr));
+			RevertToSelf();
 			ss->fileSize.LowPart = GetFileSize(ss->handle, &ss->fileSize.HighPart);
 			ChkExit(CreateIoCompletionPort(ss->handle, ep_fd, (ULONG_PTR)ss, 0));
 		}
 
-		while (!ss->sdt){
-			crReturn;
-		}
-		ss->sdt->ovs.ov.Offset = 0; ss->sdt->ovs.ov.OffsetHigh = 0;
-		send_msg(ss->conn, "125 Data connection already open; transfer starting.\r\n");
 #if 0
 #define BUF_LEN		0x4000
 		{
@@ -298,7 +333,7 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 					if (SOCKET_ERROR == WSASend(ss->sdt->ox.fd, ss->wBufs, nBuf, &ss->sdt->BytesSEND,
 						Flags, &ss->sdt->ovs.ov, NULL))
 					{
-						ChkExit(ERROR_IO_PENDING == errno, close_conn(ss->sdt));
+						ChkExit(ERROR_IO_PENDING == WSAGetLastError(), close_conn(ss->sdt));
 					}
 					else
 					{
@@ -320,7 +355,7 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 				ss->sdt->wb.len = (LONG)((ullnbRest >= BLOCK_SIZE) ? BLOCK_SIZE : ullnbRest);
 				if (!ReadFile(ss->handle, ss->sdt->wb.buf, ss->sdt->wb.len, &ss->read_len1, &ss->sdt->ovs.ov))
 				{
-					ChkExit(ERROR_IO_PENDING == errno, CloseHandle(ss->handle));
+					ChkExit(ERROR_IO_PENDING == GetLastError(), CloseHandle(ss->handle));
 				}
 				else
 				{
@@ -333,7 +368,7 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 				if (SOCKET_ERROR == WSASend(ss->sdt->ox.fd, &ss->sdt->wb, 1, &ss->sdt->BytesSEND,
 					Flags, &ss->sdt->ovs.ov, NULL))
 				{
-					ChkExit(ERROR_IO_PENDING == errno, close_conn(ss->sdt));
+					ChkExit(ERROR_IO_PENDING == WSAGetLastError(), close_conn(ss->sdt));
 				}
 				else
 				{
@@ -351,35 +386,37 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 		free(ss->sdt->wb.buf); ss->sdt->wb.buf = 0;
 
 #else
-			for (;;)
+		for (;;)
+		{
 			{
+				ULONGLONG *pOffset = (ULONGLONG*)&ss->sdt->ovs.ov.Offset;
+				ULONGLONG ullnbRest = ss->fileSize.QuadPart - *pOffset;
+				LONG nbRest = (LONG)((ullnbRest >= BLOCK_SIZE) ? BLOCK_SIZE : ullnbRest);
+				if (SOCKET_ERROR == lpfnTransmitFile(ss->sdt->ox.fd, ss->handle, nbRest, 0, &ss->sdt->ovs.ov, NULL,
+					TF_USE_DEFAULT_WORKER | TF_USE_KERNEL_APC | TF_WRITE_BEHIND))
 				{
-					ULONGLONG *pOffset = (ULONGLONG*)&ss->sdt->ovs.ov.Offset;
-					ULONGLONG ullnbRest = ss->fileSize.QuadPart - *pOffset;
-					LONG nbRest = (LONG)((ullnbRest >= BLOCK_SIZE) ? BLOCK_SIZE : ullnbRest);
-					if (SOCKET_ERROR == lpfnTransmitFile(ss->sdt->ox.fd, ss->handle, nbRest, 0, &ss->sdt->ovs.ov, NULL,
-						TF_USE_DEFAULT_WORKER | TF_USE_KERNEL_APC | TF_WRITE_BEHIND))
-					{
-						ChkExit(ERROR_IO_PENDING == errno, close_conn(ss->sdt));
-					}
-					else
-					{
-						print_debug("sent %lld bytes\n", nbRest);
-					}
+					ChkExit(ERROR_IO_PENDING == WSAGetLastError(), close_conn(ss->sdt));
 				}
-				crReturn;
+				else
 				{
-					ULONGLONG *pOffset = (ULONGLONG*)&ss->sdt->ovs.ov.Offset;
-					*pOffset += BLOCK_SIZE;
-					if (*pOffset >= ss->fileSize.QuadPart)
-						break;
+					print_debug("sent %lld bytes\n", nbRest);
 				}
 			}
+			crReturn;
+			{
+				ULONGLONG *pOffset = (ULONGLONG*)&ss->sdt->ovs.ov.Offset;
+				*pOffset += BLOCK_SIZE;
+				if (*pOffset >= ss->fileSize.QuadPart)
+					break;
+			}
+		}
 #endif
 		ChkExit(CloseHandle(ss->handle));
+		ss->handle = INVALID_HANDLE_VALUE;
+		send_msg(ss->conn, "226 Transfer complete\r\n");
+	Finally:
 		ss->sdt->ovs.ov.Offset = 0; ss->sdt->ovs.ov.OffsetHigh = 0;
 		close_conn(ss->sdt);  ss->sdt = 0;
-		send_msg(ss->conn, "226 Transfer complete\r\n");
 		crFinish;
 	}
 }
@@ -388,46 +425,63 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 enum {
  OPT_l = 1
 , OPT_a = 2
-, OPT_P=4
+, OPT_p=4
 , OPT_F=8
 , OPT_R=16
 };
 
 static struct tm systime;
 
-void timeStr(unsigned opts, WIN32_FIND_DATA *s_stat_ptr, char *sTime)
+void timeStr(Session *ss, WIN32_FIND_DATA *s_stat_ptr, char *sTime)
 {
 	struct tm tmFile = { 0 };
-	int len;
-	time_t ftime = 
-		(0x100000000ULL * s_stat_ptr->ftLastWriteTime.dwHighDateTime + s_stat_ptr->ftLastWriteTime.dwLowDateTime) / 10000000
-		- 11644473600ULL;
-	ChkExit(0 == _gmtime64_s(&tmFile, &ftime),
-		strcpy(sTime, "Jan 01 1980"); return);
-	  
-	asctime_s(sTime, 64, &tmFile);
-	len = (int)strlen(sTime);
-	sTime[--len]=0;
+	char *mmm, *dd, *hhmm, *yyyy;
+	char tokens[32];
+	{
+		int len;
+		time_t ftime = 
+			(0x100000000ULL * s_stat_ptr->ftLastWriteTime.dwHighDateTime + s_stat_ptr->ftLastWriteTime.dwLowDateTime) / 10000000
+			- 11644473600ULL;
 
-	strcpy(sTime, sTime + 4);
-	/*Jan 01 12:00:00 1970
-	  012345678901234567890 */
-
-	if (OPT_l & opts){
-		if (tmFile.tm_year == systime.tm_year){
-			sTime[12] = 0;
-		}
-		else{
-			strcpy(sTime + 7, sTime + 16);
-		}
+		ChkExit(0 == _gmtime64_s(&tmFile, &ftime),
+			strcpy(sTime, "Jan 01 1980"); return);
+		asctime_s(tokens, 32, &tmFile);
+		len = (int)strlen(tokens);
+		tokens[--len] = 0;
+		/*Tue Jan 01 12:00:00 1970
+			0123456789012345678901234 */
+		strcpy(tokens, tokens + 4);
+		strcpy(sTime, tokens);
+		/*Jan 01 12:00:00 1970
+	    012345678901234567890 */
+		/*May 16 17:09:01 2017*/
+		char *NextToken;
+		mmm = strtok_s(tokens, " ", &NextToken);
+		dd = strtok_s(0, " ", &NextToken);
+		hhmm = strtok_s(0, " ", &NextToken);
+		yyyy = strtok_s(0, " ", &NextToken);
+		hhmm[5] = 0;
 	}
-	else{
+	switch (ss->clnt){
+	default:;
+	case Undef:
+	{
+		/*if (OPT_l & ss->opts || 0 == ss->opts)*/
+		{
+				sprintf(sTime, "%s %s %s", mmm, dd, ((tmFile.tm_year == systime.tm_year) ? hhmm : yyyy));
+		}
+	}break;
+	case TotalCommander:
+	{
+		/*Jan 01 12:00:00 1970
+			012345678901234567890 */
 		strncpy(sTime + 20, sTime + 6, 9); sTime[26] = 0;
 		/*Jan 01 12:00:00 1970 12:00:00
-		  012345678901234567890123456789 */
+			012345678901234567890123456789 */
 		strcpy(sTime + 7, sTime + 16);
 		/*Jan 01 1970 12:00
-		  012345678901234567890 */
+			012345678901234567890 */
+	}	break;
 	}
 }
 
@@ -468,12 +522,26 @@ void timeStr(unsigned opts, WIN32_FIND_DATA *s_stat_ptr, char *sTime)
 }
 #endif
 
+void GetPrivilege(Session *ss, LPCWSTR priv, DWORD attr)
+{
+	TOKEN_PRIVILEGES tp;
+	/*ChkExit(OpenProcessToken(GetCurrentProcess(),
+		TOKEN_ADJUST_PRIVILEGES, &hToken));*/
+	CHECK(LookupPrivilegeValue(NULL, priv, &tp.Privileges[0].Luid));
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Attributes = attr;
+	CHECK(AdjustTokenPrivileges(ss->phToken, FALSE, &tp,
+		sizeof(TOKEN_PRIVILEGES), NULL, NULL), ;);
+	/*CloseHandle(hToken);*/
+}
+
 /* linkname */
-static void FileNameStr(WIN32_FIND_DATA *findData, WCHAR *s_path
-	, char *s_buffer)
+static void FileNameStr(Session* ss, WIN32_FIND_DATA *findData, WCHAR *s_path
+	, char *s_buffer) 
 {
 	int ret;
-	ChkExit(ret = WideCharToMultiByte(CP_UTF8, 0, findData->cFileName, -1, s_buffer, MAX_PATH, 0, 0));
+	ChkExit(ret = WideCharToMultiByte(CP_UTF8, 0, findData->cFileName, -1, s_buffer, 2*MAX_PATH, 0, 0));
+
 	if ((FILE_ATTRIBUTE_REPARSE_POINT & findData->dwFileAttributes)
 		&& (IO_REPARSE_TAG_SYMLINK & findData->dwReserved0))
 	{
@@ -483,57 +551,46 @@ static void FileNameStr(WIN32_FIND_DATA *findData, WCHAR *s_path
 			size_t len = wcslen(s_path) - 1; /*remove last character '*' */
 			wcsncpy(s_temp, s_path, len);
 			wcscpy(s_temp + len, findData->cFileName);
-			ChkExit(INVALID_HANDLE_VALUE != (hF = CreateFile(s_temp,// file to open
-				GENERIC_READ,          // open for reading
-				FILE_SHARE_READ,       // share for reading
-				NULL,                  // default security
-				OPEN_EXISTING,         // existing file only
-				FILE_ATTRIBUTE_NORMAL, // normal file
-				NULL)),return);                 // no attr. template
-			ChkExit(GetFinalPathNameByHandle(hF, s_temp, sizeof s_temp / sizeof s_temp[0], VOLUME_NAME_NT));
+			GetPrivilege(ss, SE_BACKUP_NAME, SE_PRIVILEGE_ENABLED);
+			ChkExit(INVALID_HANDLE_VALUE != (hF = CreateFile(s_temp,
+				FILE_READ_EA, 
+				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
+				NULL, 
+				OPEN_EXISTING, 
+				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, 
+				NULL)),
+				GetPrivilege(ss, SE_BACKUP_NAME, SE_PRIVILEGE_REMOVED);
+				return);                 // no attr. template
+			ChkExit(GetFinalPathNameByHandle(hF, s_temp, sizeof s_temp / sizeof s_temp[0], VOLUME_NAME_DOS));
 			CloseHandle(hF);
-			strcpy(s_buffer + ret, "->");
-			ChkExit(WideCharToMultiByte(CP_UTF8, 0, findData->cFileName, -1,
-				s_buffer + ret + 2, 2 * MAX_PATH - (ret + 2), 0, 0));
+			GetPrivilege(ss, SE_BACKUP_NAME, SE_PRIVILEGE_REMOVED);
+			strcpy(s_buffer + ret -1, " -> ");
+			ret += 3;
+			ChkExit(WideCharToMultiByte(CP_UTF8, 0, s_temp+4, -1,
+				s_buffer + ret, 2 * MAX_PATH - ret, 0, 0));
 		}
 	}
 }
 
-void security(WIN32_FIND_DATA *findData, char *secur)
+void getFilePermission(wchar_t fullPathName[], char *secur)
 {
-	if (FILE_ATTRIBUTE_DIRECTORY & findData->dwFileAttributes) {
+	struct _stat64i32 stat;
+	CHECK_ERR(!_wstat(fullPathName, &stat), switch (ierr){ case 0:case 5:case 32:return; default:; }, assert(!"qq"); exit(1));
+	if (_S_IFDIR & stat.st_mode) {
 		secur[0] = 'd';
 	}
-	/*else if (S_ISCHR(s_stat_ptr->st_mode) != 0) {
-	c_this = 'c';
+	else if (_S_IFCHR & stat.st_mode) {
+		secur[0] = 'c';
 	}
-	else if (S_ISBLK(s_stat_ptr->st_mode) != 0) {
-	c_this = 'b';
-	}
-	else if (S_ISFIFO(s_stat_ptr->st_mode) != 0) {
-	c_this = 'p';
-	}*/
-	else if (FILE_ATTRIBUTE_REPARSE_POINT & findData->dwFileAttributes) {
-		secur[0] = 'l';
-	}
-	/*else if (S_ISSOCK(s_stat_ptr->st_mode) != 0) {
-	c_this = 's';
-	}*/
 
 	/* user */
-	if (findData->dwFileAttributes & _S_IREAD)
+	if (stat.st_mode & _S_IREAD)
 		secur[1] = 'r';
 
-	if (findData->dwFileAttributes & _S_IWRITE)
+	if (stat.st_mode & _S_IWRITE)
 		secur[2] = 'w';
 
-	if /*((findData->dwFileAttributes & S_ISUID) && (findData->dwFileAttributes & S_IXUSR)) {
-	   secur[3] = 's';
-	   }
-	   else if (findData->dwFileAttributes & S_ISUID) {
-	   secur[3] = 'S';
-	   }
-	   else if */ (findData->dwFileAttributes & _S_IEXEC) {
+	if (stat.st_mode & _S_IEXEC) {
 		secur[3] = 'x';
 	}
 }
@@ -562,15 +619,16 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 					case ' ': goto Parse_Path;
 					case '\0': goto OPT_OK;
 					case 'l': opts |= OPT_l; break;
-						/*case 'a': opts &= OPT_a; break;
-						case 'P': opts &= OPT_P; break;
-						case 'F': opts &= OPT_F; break;
-						case 'R': opts &= OPT_R; break;*/
+						case 'a': opts |= OPT_a; break;
+						case 'p': opts |= OPT_p; break;
+						case 'F': opts |= OPT_F; break;
+						case 'R': opts |= OPT_R; break;
 					}
 				}
 				goto Parse_Path;
 				SyntaxError:
 				send_msg(ss->conn, "501 Syntax error in parameters or arguments.\r\n");
+				goto Finally;
 				crBreak;
 			}
 		Parse_Path:
@@ -592,35 +650,50 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 				*pch++ = L'\\';
 			*pch = L'*';
 			*++pch = L'\0';
-			ss->handle = FindFirstFileW(ss->file_name, &findData);
-			if (ss->handle == INVALID_HANDLE_VALUE)
-			{
+			ChkExit(ImpersonateLoggedOnUser(ss->phToken));
+			CHECK(INVALID_HANDLE_VALUE != (ss->handle = FindFirstFileW(ss->file_name, &findData)),
+				RevertToSelf();
 				findData.cFileName[0] = L'\0';
 				send_msg(ss->conn, "450 Requested file action not taken. File unavailable(e.g., file busy).\r\n");
-				crBreak;
-			}
+				goto Finally;
+			);
+			RevertToSelf();
 		}
 		time(&time64);
 		_gmtime64_s(&systime, &time64);
 		do {
-			char u8[2 * MAX_PATH];
-			char secur[11] = "-rw-r--r--"; 
-			char fileTime[64];
+			if (OPT_a & ss->opts || !(FILE_ATTRIBUTE_HIDDEN & findData.dwFileAttributes)) 
+			{
+				char u8[2 * MAX_PATH];
+				char secur[] = "----------+";
+				char fileTime[64];
+				//char ownerGroup[MAX_PATH] = "unknown unknown";
+				char ownerGroup[MAX_PATH] = "ftp ftp";
+				wchar_t chFileName[MAX_PATH];
 
-			security(&findData, secur);
-			timeStr(ss->opts, &findData, fileTime);
-			FileNameStr(&findData, ss->file_name, &u8[0]);
+				wcscpy(chFileName, ss->sCurrPath);
+				wcscat(chFileName, findData.cFileName);
 
-			send_msg(ss->sdt, "%s 1 %-10s %-10s %10llu %s %s\r\n",
-				secur, "user", "user",
-				0x100000000LL * findData.nFileSizeHigh + findData.nFileSizeLow, fileTime, u8);
-			crReturn;
+				/*getOwnerGroup(chFileName, ownerGroup);*/
+				getFilePermission(chFileName, secur);
+				if (FILE_ATTRIBUTE_REPARSE_POINT & findData.dwFileAttributes) {
+					secur[0] = 'l';
+				}
+				timeStr(ss, &findData, fileTime);
+				FileNameStr(ss, &findData, ss->file_name, &u8[0]);
+
+				send_msg(ss->sdt, "%s 1 %s %10llu %s %s\r\n",
+					secur, ownerGroup,
+					0x100000000LL * findData.nFileSizeHigh + findData.nFileSizeLow, fileTime, u8);
+				crReturn;
+			}
 		} while (FindNextFile(ss->handle, &findData));
-		/*send_msg(ss, "226 Transfer complete\r\n");*/
+		/*send_msg(ss->conn, "226 Transfer complete\r\n");*/
 		send_msg(ss->conn, "250 Requested file action okay, completed.\r\n");
-		close_conn(ss->sdt); ss->sdt = 0;
 		FindClose(ss->handle);
 		ss->handle = INVALID_HANDLE_VALUE;
+	Finally:
+		close_conn(ss->sdt); ss->sdt = 0;
 		crFinish;
 }
 
@@ -629,12 +702,14 @@ CMD(DELE)
 	char utf8[2 * MAX_PATH];
 	wchar_t path[MAX_PATH];
 
+	ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 	makePath(ss, path, utf8);
 	if(DeleteFile(path)){
 		send_msg(ss->conn, "257 \"%s\" file deleted.\r\n", utf8);
 	}else{
 		send_msg(ss->conn, "550 \"%s\" file wasn't deleted.\r\n", utf8);
 	}
+	RevertToSelf();
 }
 
 CMD(RMD)
@@ -642,12 +717,14 @@ CMD(RMD)
 	char utf8[2 * MAX_PATH];
 	wchar_t path[MAX_PATH];
 
+	ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 	makePath(ss, path, utf8);
 	if(0 == _wrmdir(path)){
 		send_msg(ss->conn, "257 \"%s\" directory created.\r\n", utf8);
 	}else{
 		send_msg(ss->conn, "550 \"%s\" directory wasn't created.\r\n", utf8);
 	}
+	RevertToSelf();
 }
 
 CMD(MKD)
@@ -655,12 +732,14 @@ CMD(MKD)
 	char utf8[2 * MAX_PATH];
 	wchar_t path[MAX_PATH];
 
+	ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 	makePath(ss, path, utf8);
 	if(-1 != _wmkdir(path)){
 		send_msg(ss->conn, "250 \"%s\" directory created.\r\n", utf8);
 	}else{
 		send_msg(ss->conn, "550 \"%s\" directory wasn't created.\r\n", utf8);
 	}
+	RevertToSelf();
 }
 
 CMD(PWD)
@@ -689,6 +768,8 @@ CMD(CWD)
 				*p = L'\\';
 			}
 		}
+		if (L'\\' != path[wcslen(path)-1])
+			wcscat(path, L"\\");
 		wcscpy(ss->sCurrPath, path);
 		send_msg(ss->conn, "250 CWD successful. \"%s\" is current directory.\r\n", utf8);
 	}
@@ -740,7 +821,7 @@ CMD(PASV)	/* PASV <CRLF> */
 		int sesslen = sizeof sess;
 		int peerlen = sizeof peer;
 		ChkExit(!getsockname(ss->conn->ox.fd, (SOCKADDR*)&sess, &sesslen));
-		ChkExit(!getsockname(ss->conn->ox.fd, (SOCKADDR*)&peer, &peerlen));
+		ChkExit(!getpeername(ss->conn->ox.fd, (SOCKADDR*)&peer, &peerlen));
 		PrepareNextAcceptEx(&ss->ovAcc);
 		ChkExit(!getsockname(ss->ovAcc.fd, (SOCKADDR*)&name, &namelen));
 		getAccept(ss->conn, peer.sin_addr, name.sin_port);
@@ -790,6 +871,17 @@ CMD(TYPE)
 	}
 }
 
+CMD(CLNT)
+{
+	int i = sizeof clients/sizeof clients[0];
+	while (--i){
+		if (strstr(ss->u8opts, clients[i].sClient)){
+			ss->clnt = clients[i].clnt;
+		}
+	}
+	send_msg(ss->conn, "200 Command okay.\r\n");
+}
+
 CMD(NOOP)
 {
 	send_msg(ss->conn, "200 Command okay.\r\n");
@@ -798,16 +890,52 @@ CMD(NOOP)
 CMD(QUIT)
 {
 	close_conn(ss->sdt); ss->sdt = 0;
-	close_conn(ss->conn); ss->conn = 0;
+	/*close_conn(ss->conn);*/
+	CloseHandle(ss->phToken);
 }
 CMD(USER)	/* USER <SP> <username> <CRLF> */
 {
-	/*send_msg(ss->conn, "331 Password required for anonymous\r\n");*/
-	send_msg(ss->conn, "230 Login successful.\r\n");
+	if (0 == strcmp("anonymous", ss->u8opts)){
+		PSID psid;
+		wchar_t RefDomainName[64];
+		SID_NAME_USE sidNameUse;
+		DWORD cchName = sizeof ss->_user / sizeof ss->_user[0],
+			cchRefDomainName = sizeof RefDomainName / sizeof RefDomainName[0];
+
+		ChkExit(ConvertStringSidToSidW(L"S-1-5-7", &psid));
+		ChkExit(LookupAccountSidW(NULL, psid, ss->_user, &cchName
+			, RefDomainName, &cchRefDomainName, &sidNameUse));
+		RefDomainName[63] = RefDomainName[63];
+	}
+	else{
+		ChkExit(MultiByteToWideChar(CP_UTF8, 0, ss->u8opts, -1, ss->_user, sizeof ss->_user / sizeof ss->_user[0]));
+	}
+	if(LogonUser(ss->_user, 0, 0,
+		LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, &ss->phToken))
+	{
+		send_msg(ss->conn, "230 Login successful.\r\n");
+	}
+	else{
+		ChkExit(ERROR_LOGON_FAILURE == GetLastError());
+		send_msg(ss->conn, "331 Password required.\r\n");
+	}
 }
 CMD(PASS)	/* PASS <SP> <password> <CRLF> */
 {
-	send_msg(ss->conn, "230 Login successful.\r\n");
+	USE_CONVERSION_U2W;
+	if (LogonUser(ss->_user, 0, u2w(ss->u8opts),
+		LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &ss->phToken))
+		/*
+		SECURITY_ANONYMOUS_LOGON_RID
+		S-1-5-7
+*/
+	{
+		send_msg(ss->conn, "230 Login successful.\r\n");
+	}
+	else{
+		ChkExit(ERROR_LOGON_FAILURE == GetLastError());
+		send_msg(ss->conn, "331 Password required.\r\n");
+	}
 }
 
 #undef CMD
@@ -844,7 +972,7 @@ void handler(Session *ss)
 		{ enRMD,  CMD(RMD),	 DOER(RMD), 	1 },	/* RMD  <SP> <pathname> <CRLF> */
 		{ enXRMD, CMD(XRMD), DOER(RMD),		1 },	/* XRMD <SP> <pathname> <CRLF> */
 		{ enMKD,  CMD(MKD),  DOER(MKD), 	1 },	/* MKD  <SP> <pathname> <CRLF> */
-		{ enXMKD, CMD(XMKD), DOER(MKD),     1 },	/* XMKD <SP> <pathname> <CRLF> */
+		{ enXMKD, CMD(XMKD), DOER(MKD),   1 },	/* XMKD <SP> <pathname> <CRLF> */
 		{ enDELE, CMD(DELE), DOER(DELE),	1 },	/* DELE <SP> <pathname> <CRLF> */
 		{ enPASV, CMD(PASV), DOER(PASV),	1 },	/* PASV <CRLF> */
 #if 0
@@ -856,7 +984,7 @@ void handler(Session *ss)
 		{ enNLST, CMD(NLST), DOER(NLST),	1 },	/* NLST [<SP> <pathname>] <CRLF> */
 		{ enACCT, CMD(ACCT), DOER(ACCT),	1 },	/* ACCT <SP> <account-information> <CRLF> */
 #endif
-		{ enSIZE, CMD(SIZE), DOER(SIZE),    1 },	/* SIZE <SP> <pathname> <CRLF> */
+		{ enSIZE, CMD(SIZE), DOER(SIZE),  1 },	/* SIZE <SP> <pathname> <CRLF> */
 #if 0
 		{ enSTRU, CMD(STRU), DOER(STRU),	1 },	/* STRU <SP> <structure-code> <CRLF> */
 		{ enRNFR, CMD(RNFR), DOER(RNFR),	1 },	/* RNFR <SP> <pathname> <CRLF> */
@@ -879,27 +1007,34 @@ void handler(Session *ss)
 		{ enSTAT, CMD(STAT), DOER(STAT),	1 },	/* STAT [<SP> <pathname>] <CRLF> */
 		{ enALLO, CMD(ALLO), DOER(ALLO),	1 },	/* ALLO <SP> <decimal-integer> [<SP> R <SP> <decimal-integer>] <CRLF> */
 #endif
-		{enNotCmnd, (const char *)0,	(FtpdDoerT)0,	0 }
+		{ enCLNT, CMD(CLNT), DOER(CLNT),  1 },	/* HELP [<SP> <string>] <CRLF> */
+		{ enNotCmnd, (const char *)0, (FtpdDoerT)0, 0 }
 	};
-	int iCmnd = 0;
 
-	while (CmndTable[iCmnd].cmnd_ != ((const char *)0)) {
-		if (strcmp(ss->cmnd_, CmndTable[iCmnd].cmnd_) == 0) 
-		{
-			CmndTable[iCmnd].hndl_(ss);
-			if (ss->state){
-				print_debug("command '%s' line '%d'",
-					ss->cmnd_, ss->state);
-				return;
+	if (!ss->state)
+	{
+		int iCmnd = 0;
+		for (; CmndTable[iCmnd].cmnd_ != ((const char *)0); ++iCmnd) {
+			if (strcmp(ss->cmnd_, CmndTable[iCmnd].cmnd_) == 0)
+			{
+				ss->iCmnd = iCmnd;
+				goto DoCommand;
 			}
-			print_info("command '%s' with parameters '%s' done.\n",
-				ss->cmnd_, ss->u8opts);
-			goto done;
 		}
-		++iCmnd;
+		send_msg(ss->conn, "500 %s not understood\r\n", ss->cmnd_);
+		print_info("Command '%s' with parameters '%s' has not implemented.\n",
+			ss->cmnd_, ss->u8opts);
+		goto done;
 	}
-	send_msg(ss->conn, "500 %s not understood\r\n", ss->cmnd_);
-	print_info("Command '%s' with parameters '%s' has not implemented.\n",
+	DoCommand:
+	CmndTable[ss->iCmnd].hndl_(ss);
+
+	if (ss->state){
+		print_debug("command '%s' line '%d'",
+			ss->cmnd_, ss->state);
+		return;
+	}
+	print_info("command '%s' with parameters '%s' done.\n",
 		ss->cmnd_, ss->u8opts);
 	done:
 	ss->cmnd_[0] = '\0';

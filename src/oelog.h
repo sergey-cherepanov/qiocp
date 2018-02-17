@@ -19,15 +19,18 @@
 #include <stdarg.h>
 #include <errno.h>
 
-#define ChkRet(func) do{ \
+extern SERVICE_STATUS_HANDLE serviceStatusHandle;
+#define LOGFILE "C:\\memstatus.txt"
+
+#define ChkRet(func,...) do{ \
 if (!(func)){ \
 	LPWSTR sErr = NULL; \
 	FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, \
-	NULL, WSAGetLastError(), MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPWSTR)&sErr, 0, NULL); \
+	NULL, errno, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPWSTR)&sErr, 0, NULL); \
 	print_error("func "#func" returns fatal error %d '%S' in %s line %d func %s \n" \
 	, errno, sErr, __FILE__, __LINE__, __FUNCTION__); \
 	LocalFree(sErr); \
-	exit(1); \
+	 {__VA_ARGS__; } \
 }} while (0)
 
 #define p_xx(i1,i2) {print_info("%s "#i1"=%p "#i2"=%p\n",__FUNCTION__,(void*)(i1),(void*)(i2));}
@@ -40,27 +43,27 @@ int print_log(unsigned short color, const char *format, ...);
 #define LOG_ERR   3
 
 #if LOG_LEVEL > LOG_DEBUG
-#define print_debug(format, ...)
+#define print_debug(format,...)
 #else
-#define print_debug(format, ...) print_log(COLOR_DEBUG, format, __VA_ARGS__)
+#define print_debug(format,...) print_log(COLOR_DEBUG, format, __VA_ARGS__)
 #endif
 
 #if LOG_LEVEL > LOG_MSG
-#define print_info(format, ...)
+#define print_info(format,...)
 #else
-#define print_info(format, ...) print_log(COLOR_INFO, format, __VA_ARGS__)
+#define print_info(format,...) print_log(COLOR_INFO, format, __VA_ARGS__)
 #endif
 
 #if LOG_LEVEL > LOG_WARN
-#define print_warning(format, ...)
+#define print_warning(format,...)
 #else
-#define print_warning(format, ...) print_log(COLOR_WARNING, format, __VA_ARGS__)
+#define print_warning(format,...) print_log(COLOR_WARNING, format, __VA_ARGS__)
 #endif
 
 #if LOG_LEVEL > LOG_ERR
-#define print_error(format, ...)
+#define print_error(format,...)
 #else
-#define print_error(format, ...) print_log(COLOR_ERROR, format, __VA_ARGS__)
+#define print_error(format,...) print_log(COLOR_ERROR, format, __VA_ARGS__)
 #endif
 
 #define LOG_DEBUG 0

@@ -34,15 +34,14 @@ void handle_cmd_overall(uint8_t *recv_buf, uint32_t buf_len, connection_t *pConn
 static void cleanup(void) 
 {
 	WSACleanup();
-	_getch();
+	/*_getch();*/
 }
 
-int wmain(int argc, char **argv)
+int InitService(int argc, char **argv)
 {
-
 	WSADATA wsa_data;
 	WSAStartup(0x0202, &wsa_data);
-	ChkExit(SetConsoleOutputCP(CP_UTF8));
+	/*ChkExit*/(SetConsoleOutputCP(CP_UTF8));
 	atexit(cleanup);
 		
 	event_init();
@@ -53,11 +52,7 @@ int wmain(int argc, char **argv)
 		int namelen = sizeof name;
 		async_accept(&ovListen, PORT);
 		ChkExit(!getsockname(ovListen.fd, (struct sockaddr*)&name, &namelen));
-		p_ii(ovListen.fd, htons(name.sin_port));
+		/*p_ii(ovListen.fd, htons(name.sin_port));*/
 	}
-
-	event_dispatch();
-
-	printf("done\n");
 	return 0;
 }

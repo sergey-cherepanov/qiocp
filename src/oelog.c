@@ -15,21 +15,30 @@
  */
 
 #define _WIN32_WINNT 0x0600
-#include <stdio.h>
 #include <windows.h>
+#include <stdio.h>
 #include "oelog.h"
 
 HANDLE hConsole = 0, hConErr = 0;
+
 int print_log(WORD clr, const char *format, ...)
 {
 	int ret;
 	va_list ap;
+	static FILE* log=0;
 	va_start(ap, format);
-	if (!hConsole) hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-	SetConsoleTextAttribute(hConsole, clr);
-	ret = vfprintf(stdout, format, ap);
-	SetConsoleTextAttribute(hConsole, COLOR_NONE);
-	fflush(stdout);
+	if (0 == serviceStatusHandle){
+		if (!hConsole) hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+		SetConsoleTextAttribute(hConsole, clr);
+		ret = vfprintf(stdout, format, ap);
+		SetConsoleTextAttribute(hConsole, COLOR_NONE);
+	}
+	else{
+		if (!log)
+			log = fopen(LOGFILE, "a+");
+		ret = vfprintf(log, format, ap);
+	}
+	fflush(log);
 	va_end(ap);
 	return ret;
 }

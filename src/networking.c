@@ -82,7 +82,7 @@ void event_dispatch(void)
 		t2 = GetTickCount();
 		tMax = max(tMax, t2 - t1);
 		Next:
-		print_debug("//// %llu tMax=%llu ////", t2 - t1, tMax);
+		print_debug("//// %llu tMax=%llu ////\n", t2 - t1, tMax);
 	}
 }
 
@@ -122,103 +122,6 @@ void set_error_handler(void(*new_error_handler)(SOCKET, int)) {
 	error_handler = new_error_handler;
 }
 
-
-void async_send(connection_t **pp_conn, in_addr_t ip, in_port_t port,
-		void *buf, int len) 
-{
-	struct buf_list *last_list;
-	struct buf_list *new_list;
-	connection_t *pConn;
-	int isConnected=0;
-
-	if (NULL == *pp_conn ) {
-		pConn=malloc(sizeof(connection_t));
-		*pp_conn=pConn;
-	}else{
-		pConn=*pp_conn;
-		if(FD_INVALID != pConn->ox.fd){
-			isConnected=1;
-		}
-	}
-	if (0==isConnected) {
-		/* make new connection */
-		struct sockaddr_in saddr;
-		int ret;
-		memset(pConn, 0, sizeof(connection_t));
-		ChkExit(pConn->ox.fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP));
-		saddr.sin_addr.s_addr = ip;
-		saddr.sin_family = AF_INET;
-		saddr.sin_port = port;
-		ret = connect(pConn->ox.fd, (struct sockaddr *) &saddr,
-				sizeof(saddr));
-		if ((-1 == ret) && (errno != EWOULDBLOCK) && (errno != EINPROGRESS)) {
-			error_handler(pConn->ox.fd, errno);
-			return;
-		}
-		print_socket("connect", pConn->ox.fd);
-	}
-
-	/* Add data to send queue */
-	if( len > 0 ){
-		if (NULL == pConn->write_list) {
-			int ret;
-			do {
-				/*errno = 0;*/
-				ret = send(pConn->ox.fd, buf, len,0);
-			} while(EINTR == errno);
-			if(len==ret){
-				free(buf);
-				return;
-			}else if(ret<0){
-				if (errno == EWOULDBLOCK || errno == EAGAIN) {
-					ret = 0;
-				} else {
-					error_handler(pConn->ox.fd, errno);
-				}
-			}
-			pConn->wbuf_offset += ret;
-		}
-
-		new_list = malloc(sizeof(*new_list));
-		if (NULL == new_list) {
-			error_handler(pConn->ox.fd, ENOMEM);
-			return;
-		}
-		new_list->buf = buf;
-		new_list->len = len;
-		new_list->next = NULL;
-		if (NULL == pConn->write_list) {
-			pConn->write_list = new_list;
-		} else {
-			last_list = pConn->write_list;
-			while (last_list->next != NULL) {
-				last_list = last_list->next;
-			}
-			last_list->next = new_list;
-		}
-	}
-
-	{
-		/*
-		short eventsBits=(NULL == pConn->write_list)?
-			EV_READ:
-			EV_READ | EV_WRITE;
-
-		if(0==pConn->rw_event.ev_events)
-		{
-			event_set(&pConn->rw_event, pConn->fd,
-				eventsBits, rw_event_handler, pConn);
-			ChkExit(event_add(&pConn->rw_event,NULL));
-		}else{
-			if(eventsBits != pConn->rw_event.ev_events){
-				event_set(&pConn->rw_event, pConn->fd,
-					eventsBits, rw_event_handler, pConn);
-				ChkExit(event_mod(&pConn->rw_event));
-			}
-		}*/
-	}
-}
-
 void send_msg_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	OVX *ovs = (OVX *)lpOverlapped;
@@ -232,8 +135,8 @@ void send_msg_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERL
 	ChkExit(!WSAEnumNetworkEvents(pConn->ox.fd, 0/*ss->ov.hEvent*/, &ne), break);
 	print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
 	}
-#endif
 	ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);
+#endif
 	if (ss->sdt){
 		if ((ss->state)
 			&& (ss->sdt->ovs.fd == ovs->fd)){
@@ -267,15 +170,15 @@ void launchRecv(connection_t *pConn)
 	DWORD Flags = 0;
 	pConn->recvLen = 0;
 	pConn->wb.buf[0] = '\0';
-		if (SOCKET_ERROR == WSARecv(pConn->ox.fd, &pConn->wb, 1, &pConn->recvLen,
-			&Flags, &pConn->ox.ov, NULL))
-		{
-			ChkExit(ERROR_IO_PENDING == errno, { close_conn(pConn); break; });
-		}
-		else
-		{
-			pConn->wb.buf[pConn->recvLen] = '\0';
-			print_debug("received2 %d bytes %s\n", pConn->recvLen, pConn->wb.buf);
+	if (SOCKET_ERROR == WSARecv(pConn->ox.fd, &pConn->wb, 1, &pConn->recvLen,
+		&Flags, &pConn->ox.ov, NULL))
+	{
+		ChkExit(ERROR_IO_PENDING == WSAGetLastError(), { close_conn(pConn); break; });
+	}
+	else
+	{
+		pConn->wb.buf[pConn->recvLen] = '\0';
+		print_debug("received2 %d bytes %s\n", pConn->recvLen, pConn->wb.buf);
 	}
 }
 
@@ -291,24 +194,23 @@ void recv_cplt_handler(Session *ss)
 	memmove(buf, pConn->wb.buf,pConn->recvLen);
 	buf[pConn->recvLen] = 0;
 
-	launchRecv(pConn);
-
 	for (; (pEnd = strstr(pbuf, "\r\n")); pbuf = pEnd+2)
 	{
 		*pEnd = 0;
 		token = strtok(pbuf, delim);
 		if (token)
 		{
-			strcpy(ss->cmnd_, token);
+			strcpy_s(ss->cmnd_, 5, token);
 			token = strtok(NULL, delim + 2);
 			if (token)
 			{
-				strcpy(ss->u8opts, token);
+				strcpy_s(ss->u8opts, 2*MAX_PATH, token);
 			}
 			ss->state = 0;
 			handler(ss);
 		}
 	}
+	launchRecv(pConn);
 }
 
 void recv_data_cplt(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
@@ -344,15 +246,9 @@ void rwc_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED
 
 	p_xx(completionKey, lpOverlapped);
 	if (0 == cbTransferred){
-		WSANETWORKEVENTS ne = { 0 };
-		ChkExit(!WSAEnumNetworkEvents(pConn->ox.fd, 0, &ne));
-		print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
-		if (FD_CLOSE & ne.lNetworkEvents){
-				ChkExit(!ne.iErrorCode[FD_CLOSE_BIT]);
-				close_conn(pConn);
-			free(ss);
-			return;
-		}		
+		free(pConn);
+		free(ss);
+		return;
 	}
 	ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
 
@@ -412,8 +308,8 @@ void NewSession(connection_t *pConn)
 	pConn->ovs.fd = pConn->ox.fd;
 	ChkExit(CreateIoCompletionPort((HANDLE)pConn->ox.fd, ep_fd, (ULONG_PTR)ss, 0));
 	ChkExit(WSA_INVALID_EVENT != (pConn->ox.ov.hEvent = WSACreateEvent()));
-	ChkExit(SOCKET_ERROR != WSAEventSelect(pConn->ox.fd, pConn->ox.ov.hEvent, FD_READ | FD_WRITE | FD_CLOSE));
-
+	ChkExit(SOCKET_ERROR != WSAEventSelect(pConn->ox.fd, pConn->ox.ov.hEvent
+		, FD_READ | FD_WRITE | FD_CLOSE));
 
 	send_msg(pConn, "220 IOCP FTP Server\r\n");
 
@@ -508,7 +404,8 @@ void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLA
 		sdt->ovs.fd = sdt->ox.fd;
 		ChkExit(CreateIoCompletionPort((HANDLE)sdt->ox.fd, ep_fd, (ULONG_PTR)connCtrl->session, 0));
 		ChkExit(WSA_INVALID_EVENT != (sdt->ox.ov.hEvent = WSACreateEvent()));
-		ChkExit(SOCKET_ERROR != WSAEventSelect(sdt->ox.fd, sdt->ox.ov.hEvent, FD_READ | FD_WRITE | FD_CLOSE));
+		ChkExit(SOCKET_ERROR != WSAEventSelect(sdt->ox.fd, sdt->ox.ov.hEvent
+			, FD_READ | FD_WRITE | FD_CLOSE));
 		sdt->ovs.ov.hEvent = sdt->ox.ov.hEvent;
 		/*NewDataSocket(session, sdt->oa.fd);*/
 	}else{
@@ -543,34 +440,20 @@ void close_conn(connection_t *pConn){
 		return;
 	{
 		SOCKET fd = pConn->ox.fd;
-		struct buf_list *el_buf = pConn->write_list;
 
-		for (; el_buf != NULL;) {
-			struct buf_list *el = el_buf;
-			el_buf = el_buf->next;
-			free(el->buf);
-			free(el);
-		}
-		pConn->write_list = NULL;
 		if (pConn->read_buf)
 			free(pConn->read_buf);
 		pConn->read_buf = NULL;
 		pConn->read_bufsize = 0;
 
-		/*if (INVALID_HANDLE_VALUE != pConn->handle){
-			ChkExit(CloseHandle(pConn->handle));
-			pConn->handle = INVALID_HANDLE_VALUE;
-			}*/
 		if (INVALID_SOCKET != fd){
-			/*event_del(&pConn->rw_event);*/
 			ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
 			ChkExit(CloseHandle(pConn->ox.ov.hEvent));
 			print_socket("close_conn", fd);
 			ChkExit(!closesocket(fd));
 		}
-		/*memset(pConn, 0, sizeof*pConn);*/
 		pConn->ox.fd = INVALID_SOCKET;
-		free(pConn);
-		pConn = 0;
+		/*free(pConn);
+		pConn = 0;*/
 	}
 }
