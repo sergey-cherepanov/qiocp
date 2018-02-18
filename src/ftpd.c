@@ -121,7 +121,7 @@ void send_msg(connection_t *conn, const char *format, ...)
 	po->wb.buf = (char*)(po + 1);
 	po->ev_callback = send_msg_cplt_handler;
 	po->fd = conn->ox.fd;
-	po->ov.hEvent = conn->ox.ov.hEvent;
+	po->ov.hEvent = 0; /* conn->ox.ov.hEvent;*/
 	{
 		va_list ap;
 		va_start(ap, format);
@@ -145,7 +145,7 @@ void send_msg(connection_t *conn, const char *format, ...)
 }
 
 #undef CMD
-#define CMD(A) void ftpdCmnd_##A(Session *ss)
+#define CMD(A) void ftpdCmnd_##A(Session *ss, OVX* pov)
 
 void makePathW(Session *ss, wchar_t path[])
 {
@@ -942,9 +942,9 @@ CMD(PASS)	/* PASS <SP> <password> <CRLF> */
 #define CMD(A) #A
 #define DOER(A) ftpdCmnd_##A
 
-void handler(Session *ss)
+void handler(Session *ss, OVX* pox)
 {
-	typedef void(*FtpdDoerT)(Session *);
+	typedef void(*FtpdDoerT)(Session*, OVX*);
 	static const struct {
 		CmndT _cmnd;
 		const char *cmnd_;
@@ -1027,7 +1027,7 @@ void handler(Session *ss)
 		goto done;
 	}
 	DoCommand:
-	CmndTable[ss->iCmnd].hndl_(ss);
+	CmndTable[ss->iCmnd].hndl_(ss, pox);
 
 	if (ss->state){
 		print_debug("command '%s' line '%d'",

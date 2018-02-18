@@ -198,9 +198,8 @@ void PrepareNextAcceptEx(OVX *poL);
 void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
 void send_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
 void send_msg_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
-void recv_oob(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
 
-void read_event_handler(connection_t *pConn);
+void read_event_handler(connection_t *pConn, OVX* pox);
 
 /* Implemented in oerte_daemon.c but called by accept event handler */
 void notify_about_connection(connection_t *connection);
@@ -212,7 +211,7 @@ void close_conn(connection_t *connection);
 
 void check_error(int ret, char *msg);
 
-void handler(Session* s_session);
+void handler(Session* s_session, OVX* pox);
 void send_msg(connection_t *ss, const char *format, ...);
 void makePathW(Session *ss, wchar_t path[]);
 

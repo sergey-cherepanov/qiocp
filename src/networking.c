@@ -140,7 +140,7 @@ void send_msg_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERL
 	if (ss->sdt){
 		if ((ss->state)
 			&& (ss->sdt->ovs.fd == ovs->fd)){
-			handler(ss);
+			handler(ss, ovs);
 		}
 	}
 	free(ovs);
@@ -159,9 +159,9 @@ void send_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPE
 	print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
 	}
 #endif
-	ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);
+	/*ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);*/
 	if (ss->state && ss->sdt->ox.fd == ovs->fd){
-		handler(ss);
+		handler(ss, ovs);
 	}
 }
 
@@ -182,7 +182,7 @@ void launchRecv(connection_t *pConn)
 	}
 }
 
-void recv_cplt_handler(Session *ss)
+void recv_cplt_handler(Session *ss, OVX* pox)
 {
 	connection_t* pConn=ss->conn;
 	char delim[] = " \t\r\n";
@@ -207,7 +207,7 @@ void recv_cplt_handler(Session *ss)
 				strcpy_s(ss->u8opts, 2*MAX_PATH, token);
 			}
 			ss->state = 0;
-			handler(ss);
+			handler(ss,pox);
 		}
 	}
 	launchRecv(pConn);
@@ -219,13 +219,13 @@ void recv_data_cplt(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED l
 	connection_t *pConn = (connection_t *)((char*)lpOverlapped - offsetof(connection_t, ox));
 
 	p_xx(completionKey, lpOverlapped);
-	ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
+	/*ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));*/
 	pConn->recvLen = cbTransferred;
 
 	print_debug("data received %d bytes\n", pConn->recvLen);
 	if (ss->sdt){
 		if (ss->state && ss->sdt->ox.fd == ((OVX*)lpOverlapped)->fd){
-			handler(ss);
+			handler(ss, (OVX*)lpOverlapped);
 		}
 	}
 
@@ -250,14 +250,14 @@ void rwc_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED
 		free(ss);
 		return;
 	}
-	ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
+	/*ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));*/
 
 
 	pConn->recvLen = cbTransferred;
 	pConn->wb.buf[pConn->recvLen] = '\0';
 
 	print_debug("received %d bytes %s\n", pConn->recvLen, pConn->wb.buf);
-	recv_cplt_handler(ss);
+	recv_cplt_handler(ss, (OVX*)lpOverlapped);
 
 	/*Socket has closed after QUIT command*/
 	pConn = ss->conn;
@@ -281,13 +281,13 @@ void accept_dt_cplt(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED l
 		print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
 	}
 #endif
-	ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);
+	/*ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);*/
 	accept_event_handler(cbTransferred, completionKey, lpOverlapped);
 	{
 		Session *ss = sdt->session;
 		p_xx(ss, poL);
 		if (ss->state){
-			handler(ss);
+			handler(ss, poL);
 		}
 	}
 }
@@ -307,9 +307,9 @@ void NewSession(connection_t *pConn)
 	pConn->ovs.ev_callback = send_cplt_handler;
 	pConn->ovs.fd = pConn->ox.fd;
 	ChkExit(CreateIoCompletionPort((HANDLE)pConn->ox.fd, ep_fd, (ULONG_PTR)ss, 0));
-	ChkExit(WSA_INVALID_EVENT != (pConn->ox.ov.hEvent = WSACreateEvent()));
+	/*ChkExit(WSA_INVALID_EVENT != (pConn->ox.ov.hEvent = WSACreateEvent()));
 	ChkExit(SOCKET_ERROR != WSAEventSelect(pConn->ox.fd, pConn->ox.ov.hEvent
-		, FD_READ | FD_WRITE | FD_CLOSE));
+		, FD_READ | FD_WRITE | FD_CLOSE));*/
 
 	send_msg(pConn, "220 IOCP FTP Server\r\n");
 
@@ -356,7 +356,7 @@ void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLA
 	connection_t *connCtrl = NULL;
 	LPSOCKADDR_IN pLocalSock, pRemoteSock;
 	int LocalSockLen = 0, RemoteSockLen = 0;
-	ChkExit(WSAResetEvent(poL->ov.hEvent));
+	/*ChkExit(WSAResetEvent(poL->ov.hEvent));*/
 
 	ChkExit(!setsockopt(sdt->ox.fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
 		(char *)&poL->fd, sizeof(poL->fd)));
@@ -403,10 +403,10 @@ void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLA
 		sdt->ovs.ev_callback = send_cplt_handler;
 		sdt->ovs.fd = sdt->ox.fd;
 		ChkExit(CreateIoCompletionPort((HANDLE)sdt->ox.fd, ep_fd, (ULONG_PTR)connCtrl->session, 0));
-		ChkExit(WSA_INVALID_EVENT != (sdt->ox.ov.hEvent = WSACreateEvent()));
+		/*ChkExit(WSA_INVALID_EVENT != (sdt->ox.ov.hEvent = WSACreateEvent()));
 		ChkExit(SOCKET_ERROR != WSAEventSelect(sdt->ox.fd, sdt->ox.ov.hEvent
 			, FD_READ | FD_WRITE | FD_CLOSE));
-		sdt->ovs.ov.hEvent = sdt->ox.ov.hEvent;
+		sdt->ovs.ov.hEvent = sdt->ox.ov.hEvent;*/
 		/*NewDataSocket(session, sdt->oa.fd);*/
 	}else{
 		NewSession(sdt);
@@ -430,8 +430,8 @@ void async_accept(OVX *poL, in_port_t port)
 
 	ChkExit(!listen(poL->fd, LISTEN_BACKLOG));
 
-	ChkExit(WSA_INVALID_EVENT != (poL->ov.hEvent = WSACreateEvent()));
-	ChkExit(SOCKET_ERROR != WSAEventSelect(poL->fd, poL->ov.hEvent, FD_ACCEPT));
+	/*ChkExit(WSA_INVALID_EVENT != (poL->ov.hEvent = WSACreateEvent()));
+	ChkExit(SOCKET_ERROR != WSAEventSelect(poL->fd, poL->ov.hEvent, FD_ACCEPT));*/
 	PrepareNextAcceptEx(poL);
 }
 
@@ -447,8 +447,8 @@ void close_conn(connection_t *pConn){
 		pConn->read_bufsize = 0;
 
 		if (INVALID_SOCKET != fd){
-			ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
-			ChkExit(CloseHandle(pConn->ox.ov.hEvent));
+			/*ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
+			ChkExit(CloseHandle(pConn->ox.ov.hEvent));*/
 			print_socket("close_conn", fd);
 			ChkExit(!closesocket(fd));
 		}
