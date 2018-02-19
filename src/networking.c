@@ -255,13 +255,8 @@ void accept_dt_cplt(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 	}
 }
 
-void NewSession(connection_t *pConn)
+void NewSession(Session *ss, connection_t *pConn)
 {
-	Session *ss;
-
-	ChkExit(ss = calloc(1, sizeof *ss), close_conn(pConn));
-	ss->conn = pConn;
-	pConn->session = ss;
 	wcscpy(ss->sCurrPath, L"\\");
 
 	p_xx(ss, pConn->ox.fd);
@@ -364,7 +359,12 @@ void accept_event_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 		sdt->ovs.fd = sdt->ox.fd;
 		ChkExit(CreateIoCompletionPort((HANDLE)sdt->ox.fd, ep_fd, (ULONG_PTR)connCtrl->session, 0));
 	}else{
-		NewSession(sdt);
+		Session* ss;
+
+		ChkExit(ss = calloc(1, sizeof *ss));
+		ss->conn = sdt;
+		sdt->session = ss;
+		NewSession(ss, sdt);
 	}
 }
 
