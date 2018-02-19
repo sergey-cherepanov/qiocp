@@ -110,14 +110,13 @@ struct buf_list {
 typedef struct OVX
 {
 	OVERLAPPED ov;
-	void(*ev_callback)(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
+	void(*ev_callback)(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
 	SOCKET fd;
 	struct connection_t *conn;
 	WSABUF wb;
 }OVX;
 
 extern OVX ovListen;
-extern OVX ovListen2;
 
 extern AcceptReq *sessionList;
 
@@ -186,18 +185,22 @@ typedef struct Session
 }Session;
 
 extern HANDLE ep_fd;
-void event_init(void);
 void event_dispatch(void);
-
-void set_error_handler(void(*new_error_handler)(SOCKET, int));
-
 void async_accept(OVX *poL, in_port_t port);
 void PrepareNextAcceptEx(OVX *poL);
 
-/* Can be hidden but may be useful as public */
-void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
-void send_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
-void send_msg_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
+
+/*
+send_msg_cplt_handler
+rwc_cplt_handler
+send_cplt_handler
+accept_dt_cplt
+recv_data_cplt
+send_cplt_handler
+*/
+void accept_event_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
+void send_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
+void send_msg_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
 
 void read_event_handler(connection_t *pConn, OVX* pox);
 

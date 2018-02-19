@@ -44,10 +44,9 @@ int InitService(int argc, char **argv)
 	/*ChkExit*/(SetConsoleOutputCP(CP_UTF8));
 	atexit(cleanup);
 		
-	event_init();
+	ChkExit(ep_fd = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1));
 
 	{
-		/*async_accept(&ovListen2, 2121);*/
 		struct sockaddr_in name;
 		int namelen = sizeof name;
 		async_accept(&ovListen, PORT);

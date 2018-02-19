@@ -121,7 +121,7 @@ void send_msg(connection_t *conn, const char *format, ...)
 	po->wb.buf = (char*)(po + 1);
 	po->ev_callback = send_msg_cplt_handler;
 	po->fd = conn->ox.fd;
-	po->ov.hEvent = 0; /* conn->ox.ov.hEvent;*/
+	po->ov.hEvent = 0;
 	{
 		va_list ap;
 		va_start(ap, format);
@@ -131,7 +131,6 @@ void send_msg(connection_t *conn, const char *format, ...)
 		va_end(ap);
 	}
 	/*realloc(po, sizeof(OVX) + po->wb.len + 1);*/
-	/*ChkExit(SOCKET_ERROR != WSAEventSelect(ss->fd, ss->ov.hEvent, FD_READ | FD_WRITE | FD_CLOSE));*/
 	if (SOCKET_ERROR == WSASend(conn->ox.fd, &po->wb, 1, &conn->BytesSEND,
 		Flags, &po->ov, NULL))
 	{
@@ -139,7 +138,6 @@ void send_msg(connection_t *conn, const char *format, ...)
 	}
 	else
 	{
-		/*ChkExit(SOCKET_ERROR != WSAEventSelect(ss->fd, ss->ov.hEvent, FD_READ | FD_CLOSE));*/
 		print_debug("sent %d bytes %.*s", po->wb.len, po->wb.len, po->wb.buf);
 	}
 }
@@ -688,7 +686,7 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 				crReturn;
 			}
 		} while (FindNextFile(ss->handle, &findData));
-		/*send_msg(ss->conn, "226 Transfer complete\r\n");*/
+		ChkExit(ERROR_NO_MORE_FILES == GetLastError());
 		send_msg(ss->conn, "250 Requested file action okay, completed.\r\n");
 		FindClose(ss->handle);
 		ss->handle = INVALID_HANDLE_VALUE;

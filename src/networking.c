@@ -33,14 +33,8 @@
 HANDLE ep_fd = NULL;
 
 OVX ovListen = { { 0 }, accept_event_handler, INVALID_SOCKET };
-OVX ovListen2 = { { 0 }, accept_event_handler, INVALID_SOCKET };
 
 AcceptReq *sessionList = NULL;
-
-void event_init(void)
-{
-	ChkExit(ep_fd = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1));
-}
 
 LPFN_ACCEPTEX lpfnAcceptEx;
 LPFN_GETACCEPTEXSOCKADDRS lpfnGetAcceptExSockaddrs;
@@ -59,6 +53,15 @@ void initLpFns(SOCKET s)
 
 }
 
+ /*
+ send_msg_cplt_handler
+ rwc_cplt_handler
+ send_cplt_handler
+ accept_dt_cplt
+ recv_data_cplt
+ send_cplt_handler
+ */
+
 void event_dispatch(void)
 {
 	ULONGLONG t1=0, t2=0, tMax = 0;
@@ -73,12 +76,12 @@ void event_dispatch(void)
 			&cbTransferred,
 			(PULONG_PTR)&completionKey,
 			(LPOVERLAPPED*)&pox,
-			INFINITE), goto Next);
-		/*pConn = (struct OvListen*)pOverlapped;*/
+			INFINITE), assert(cbTransferred == pox->ov.InternalHigh);goto Next);
 		p_xi(pox->ev_callback, cbTransferred);
 		p_xx(completionKey, pox);
+		assert(cbTransferred == pox->ov.InternalHigh);
 		t1 = GetTickCount();
-		pox->ev_callback(cbTransferred, completionKey, &pox->ov);
+		pox->ev_callback(completionKey, &pox->ov);
 		t2 = GetTickCount();
 		tMax = max(tMax, t2 - t1);
 		Next:
@@ -109,57 +112,28 @@ void print_socket ( char* comment, SOCKET fd)
 	}
 }
 
-static void empty_error_handler(SOCKET fd, int ierr) {
-	char str[100];
-	sprintf(str, "!!! errno=%d(%s) on", ierr, strerror(ierr));
-	print_socket(str, fd);
-	exit(EXIT_FAILURE);
-}
-
-static void(*error_handler)(SOCKET fd, int err) = empty_error_handler;
-
-void set_error_handler(void(*new_error_handler)(SOCKET, int)) {
-	error_handler = new_error_handler;
-}
-
-void send_msg_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
+void send_msg_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	OVX *ovs = (OVX *)lpOverlapped;
 	Session *ss = (Session *)completionKey;
 
 
 	p_xx(ss, ovs);
-#if 0
-	{
-		WSANETWORKEVENTS ne = { 0 };
-	ChkExit(!WSAEnumNetworkEvents(pConn->ox.fd, 0/*ss->ov.hEvent*/, &ne), break);
-	print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
-	}
-	ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);
-#endif
 	if (ss->sdt){
-		if ((ss->state)
-			&& (ss->sdt->ovs.fd == ovs->fd)){
+		if ((ss->state) && (ss->sdt->ovs.fd == ovs->fd))
+		{
 			handler(ss, ovs);
 		}
 	}
 	free(ovs);
 }
 
-void send_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
+void send_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	OVX *ovs = (OVX *)lpOverlapped;
 	Session *ss = (Session *)completionKey;
 
 	p_xx(ss, ovs);
-#if 0
-	{
-		WSANETWORKEVENTS ne = { 0 };
-	ChkExit(!WSAEnumNetworkEvents(pConn->ox.fd, 0/*ss->ov.hEvent*/, &ne), break);
-	print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
-	}
-#endif
-	/*ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);*/
 	if (ss->state && ss->sdt->ox.fd == ovs->fd){
 		handler(ss, ovs);
 	}
@@ -213,14 +187,13 @@ void recv_cplt_handler(Session *ss, OVX* pox)
 	launchRecv(pConn);
 }
 
-void recv_data_cplt(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
+void recv_data_cplt(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	Session *ss = (Session *)completionKey;
 	connection_t *pConn = (connection_t *)((char*)lpOverlapped - offsetof(connection_t, ox));
 
-	p_xx(completionKey, lpOverlapped);
-	/*ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));*/
-	pConn->recvLen = cbTransferred;
+	p_xx(completionKey, lpOverlapped->InternalHigh);
+	pConn->recvLen = (DWORD)lpOverlapped->InternalHigh;
 
 	print_debug("data received %d bytes\n", pConn->recvLen);
 	if (ss->sdt){
@@ -239,21 +212,19 @@ void recv_data_cplt(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED l
 	}
 }
 
-void rwc_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
+void rwc_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	Session *ss = (Session *)completionKey;
 	connection_t *pConn = (connection_t *)((char*)lpOverlapped - offsetof(connection_t, ox));
 
 	p_xx(completionKey, lpOverlapped);
-	if (0 == cbTransferred){
+	if (0 == lpOverlapped->InternalHigh){
 		free(pConn);
 		free(ss);
 		return;
 	}
-	/*ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));*/
 
-
-	pConn->recvLen = cbTransferred;
+	pConn->recvLen = (DWORD)lpOverlapped->InternalHigh;
 	pConn->wb.buf[pConn->recvLen] = '\0';
 
 	print_debug("received %d bytes %s\n", pConn->recvLen, pConn->wb.buf);
@@ -269,20 +240,12 @@ void rwc_cplt_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED
 	}
 }
 
-void accept_dt_cplt(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
+void accept_dt_cplt(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	OVX *poL = (OVX*)lpOverlapped;
 	connection_t *sdt = (connection_t*)poL->conn;
 
-#if 0
-	{
-		WSANETWORKEVENTS ne = { 0 };
-		ChkExit(!WSAEnumNetworkEvents(pConn->ox.fd, 0/*ss->ov.hEvent*/, &ne), break);
-		print_debug("ne.lNetworkEvents %x\n", ne.lNetworkEvents);
-	}
-#endif
-	/*ChkExit(WSAResetEvent(lpOverlapped->hEvent), break);*/
-	accept_event_handler(cbTransferred, completionKey, lpOverlapped);
+	accept_event_handler(completionKey, lpOverlapped);
 	{
 		Session *ss = sdt->session;
 		p_xx(ss, poL);
@@ -330,25 +293,22 @@ void PrepareNextAcceptEx(OVX *poL)
 	DWORD Bytes = 0;
 	connection_t *conn;
 	SOCKET peer_fd;
-	/*ChkExit(peer_fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP));*/
 	ChkExit(INVALID_SOCKET != (peer_fd = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED)));
 
 	ChkExit(conn = calloc(1, sizeof *conn), closesocket(peer_fd));
-	/*conn->handle = INVALID_HANDLE_VALUE;*/
 
 	if (!lpfnAcceptEx(poL->fd, peer_fd, (PVOID)&conn->local, 0,
 		sizeof(SOCKADDR_IN)+16, sizeof(SOCKADDR_IN)+16, &Bytes, &poL->ov))
 	{
 		ChkExit(ERROR_IO_PENDING == WSAGetLastError());
 	}
-	/*poL->ev_callback = accept_event_handler;*/
 	poL->conn = conn;
 	conn->ox.fd = peer_fd;
 	p_xx(conn, peer_fd);
 	p_xx(&conn->ox, poL->conn);
 }
 
-void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
+void accept_event_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped)
 {
 	p_xx(completionKey, lpOverlapped);
 	OVX *poL = (OVX*)lpOverlapped;
@@ -360,7 +320,7 @@ void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLA
 
 	ChkExit(!setsockopt(sdt->ox.fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
 		(char *)&poL->fd, sizeof(poL->fd)));
-	lpfnGetAcceptExSockaddrs(&sdt->local, cbTransferred
+	lpfnGetAcceptExSockaddrs(&sdt->local, (DWORD)lpOverlapped->InternalHigh
 		, sizeof(SOCKADDR_IN)+16, sizeof(SOCKADDR_IN)+16
 		, (LPSOCKADDR*)&pLocalSock, &LocalSockLen
 		, (LPSOCKADDR*)&pRemoteSock, &RemoteSockLen);
@@ -403,11 +363,6 @@ void accept_event_handler(DWORD cbTransferred, ULONG_PTR completionKey, LPOVERLA
 		sdt->ovs.ev_callback = send_cplt_handler;
 		sdt->ovs.fd = sdt->ox.fd;
 		ChkExit(CreateIoCompletionPort((HANDLE)sdt->ox.fd, ep_fd, (ULONG_PTR)connCtrl->session, 0));
-		/*ChkExit(WSA_INVALID_EVENT != (sdt->ox.ov.hEvent = WSACreateEvent()));
-		ChkExit(SOCKET_ERROR != WSAEventSelect(sdt->ox.fd, sdt->ox.ov.hEvent
-			, FD_READ | FD_WRITE | FD_CLOSE));
-		sdt->ovs.ov.hEvent = sdt->ox.ov.hEvent;*/
-		/*NewDataSocket(session, sdt->oa.fd);*/
 	}else{
 		NewSession(sdt);
 	}
@@ -417,8 +372,6 @@ void async_accept(OVX *poL, in_port_t port)
 {
 	struct sockaddr_in addr = {0};
 
-	/*ChkExit(poL->fd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP));*/
-
 	ChkExit(INVALID_SOCKET != (poL->fd = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED)));
 	print_debug("WSASocket() is OK!\n","");
 	initLpFns(poL->fd);
@@ -427,11 +380,7 @@ void async_accept(OVX *poL, in_port_t port)
 	addr.sin_port = htons(port);
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	ChkExit(!bind(poL->fd, (struct sockaddr*)&addr, sizeof(addr)));
-
 	ChkExit(!listen(poL->fd, LISTEN_BACKLOG));
-
-	/*ChkExit(WSA_INVALID_EVENT != (poL->ov.hEvent = WSACreateEvent()));
-	ChkExit(SOCKET_ERROR != WSAEventSelect(poL->fd, poL->ov.hEvent, FD_ACCEPT));*/
 	PrepareNextAcceptEx(poL);
 }
 
@@ -447,13 +396,9 @@ void close_conn(connection_t *pConn){
 		pConn->read_bufsize = 0;
 
 		if (INVALID_SOCKET != fd){
-			/*ChkExit(WSAResetEvent(pConn->ox.ov.hEvent));
-			ChkExit(CloseHandle(pConn->ox.ov.hEvent));*/
 			print_socket("close_conn", fd);
 			ChkExit(!closesocket(fd));
 		}
 		pConn->ox.fd = INVALID_SOCKET;
-		/*free(pConn);
-		pConn = 0;*/
 	}
 }
