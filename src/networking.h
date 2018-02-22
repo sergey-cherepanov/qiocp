@@ -91,15 +91,6 @@ enum INT_CONSTANTS{
 };
 
 struct connection_t;
-struct AcceptReq;
-
-typedef struct AcceptReq
-{
-	struct connection_t *ss;
-	IN_ADDR peer;
-	USHORT port;
-	struct AcceptReq *nextReq;
-}AcceptReq;
 
 struct buf_list {
     size_t len;
@@ -107,20 +98,20 @@ struct buf_list {
     void *buf;
 };
 
+typedef struct Session Session;
+typedef struct OVX OVX;
+typedef void(*CpltFun)(Session*, OVX*);
+
 typedef struct OVX
 {
 	OVERLAPPED ov;
-	void(*ev_callback)(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
+	CpltFun ev_callback;
 	SOCKET fd;
 	struct connection_t *conn;
 	WSABUF wb;
 }OVX;
 
 extern OVX ovListen;
-
-extern AcceptReq *sessionList;
-
-struct Session;
 
 typedef struct connection_t
 {
@@ -163,6 +154,7 @@ typedef struct Session
 		clientT clnt;
 		ULARGE_INTEGER fileSize;
 		ULARGE_INTEGER readBytes;
+		CpltFun funCmnd;
 		int iCmnd;
 		char cmnd_[5];
 		WCHAR _user[17];
@@ -186,8 +178,8 @@ typedef struct Session
 
 extern HANDLE ep_fd;
 void event_dispatch(void);
-void async_accept(OVX *poL, in_port_t port);
-void PrepareNextAcceptEx(OVX *poL);
+void async_accept(Session *ss, OVX *poL, in_port_t port);
+void PrepareNextAcceptEx(Session *ss, OVX *poL);
 
 
 /*
@@ -198,9 +190,9 @@ accept_dt_cplt
 recv_data_cplt
 send_cplt_handler
 */
-void accept_event_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
-void send_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
-void send_msg_cplt_handler(ULONG_PTR completionKey, LPOVERLAPPED lpOverlapped);
+void accept_event_handler(Session*, OVX*);
+void send_cplt_handler(Session*, OVX*);
+void send_msg_cplt_handler(Session*, OVX*);
 
 void read_event_handler(connection_t *pConn, OVX* pox);
 

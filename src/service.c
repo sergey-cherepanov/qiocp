@@ -34,8 +34,9 @@ SERVICE_STATUS_HANDLE serviceStatusHandle;
 */
 WCHAR serviceName[] = L"qiocpFtpd";
 void ControlHandler(DWORD request);
+int InitService(int argc, wchar_t **argv);
 
-void ServiceMain(int argc, char** argv) { 
+void ServiceMain(int argc, wchar_t** argv) {
   int error; 
   int i = 0;
 
@@ -52,7 +53,7 @@ void ServiceMain(int argc, char** argv) {
     return; 
   } 
 
-  error = InitService(); 
+  error = InitService(argc, argv);
   if (error) {
     serviceStatus.dwCurrentState    = SERVICE_STOPPED; 
     serviceStatus.dwWin32ExitCode   = -1; 
@@ -68,8 +69,6 @@ void ServiceMain(int argc, char** argv) {
 	serviceStatus.dwCurrentState = SERVICE_STOPPED;
 	serviceStatus.dwWin32ExitCode = -1;
 	(SetServiceStatus(serviceStatusHandle, &serviceStatus));
-
-  return; 
 }
 
 /*
@@ -127,7 +126,7 @@ int wmain(int argc, wchar_t **argv)
 		if (0 == wcscmp(L"/console", (wchar_t*)argv[1])){
 			void __cdecl getch(void);
 			atexit(getch);
-			InitService();
+			InitService(1, argv);
 			event_dispatch();
 			return 0;
 		}

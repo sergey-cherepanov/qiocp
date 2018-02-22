@@ -49,7 +49,7 @@ int InitService(int argc, char **argv)
 	{
 		struct sockaddr_in name;
 		int namelen = sizeof name;
-		async_accept(&ovListen, PORT);
+		async_accept(NULL, &ovListen, PORT);
 		ChkExit(!getsockname(ovListen.fd, (struct sockaddr*)&name, &namelen));
 		/*p_ii(ovListen.fd, htons(name.sin_port));*/
 	}

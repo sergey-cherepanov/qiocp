@@ -33,9 +33,8 @@ void getOwnerGroup(wchar_t *chFileName, char *ownerGrp)
 		OWNER_SECURITY_INFORMATION,    // информация, которую нужно получить
 		pSD,             // адрес буфера для дескриптора безопасности
 		dwLength,        // длина буфера
-		&dwLength), LocalFree(pSD); return);      // необходимая длина
+		&dwLength), free(pSD); return);      // необходимая длина
 
-	// получаем идентификатор безопасности владельца объекта
 	ChkExit(GetSecurityDescriptorOwner(
 		pSD,
 		&pSidOwner,
@@ -71,7 +70,6 @@ void getOwnerGroup(wchar_t *chFileName, char *ownerGrp)
 		ChkExit(WideCharToMultiByte(CP_UTF8, 0, lpStringSid, -1, ownerGrp + strlen(ownerGrp),
 			2 * MAX_PATH - (int)strlen(ownerGrp), 0, 0));
 	}
-	// освобождаем память для дескриптора
 	free(pSD);
 
 }

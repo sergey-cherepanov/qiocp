@@ -96,22 +96,6 @@ const struct clients{
 	{ TotalCommander, sTotalCommander } 
 };
 
-void getAccept(connection_t *ss, IN_ADDR peer, USHORT port)
-{
-	AcceptReq*req, *pReq;
-	req = calloc(1, sizeof *req);
-	req->ss = ss;
-	req->peer = peer;
-	req->port = port;
-	pReq = sessionList;
-	if (sessionList){
-		for (; NULL != pReq->nextReq; pReq = pReq->nextReq){ ; }
-		pReq->nextReq = req;
-	}else{
-		sessionList = req;
-	}
-}
-
 void send_msg(connection_t *conn, const char *format, ...)
 {
 	DWORD Flags = 0;
@@ -820,9 +804,8 @@ CMD(PASV)	/* PASV <CRLF> */
 		int peerlen = sizeof peer;
 		ChkExit(!getsockname(ss->conn->ox.fd, (SOCKADDR*)&sess, &sesslen));
 		ChkExit(!getpeername(ss->conn->ox.fd, (SOCKADDR*)&peer, &peerlen));
-		PrepareNextAcceptEx(&ss->ovAcc);
+		PrepareNextAcceptEx(ss, &ss->ovAcc);
 		ChkExit(!getsockname(ss->ovAcc.fd, (SOCKADDR*)&name, &namelen));
-		getAccept(ss->conn, peer.sin_addr, name.sin_port);
 		send_msg(ss->conn, "227 Entering passive mode (%u,%u,%u,%u,%u,%u).\r\n"
 			, sess.sin_addr.s_net, sess.sin_addr.s_host, sess.sin_addr.s_lh, sess.sin_addr.s_impno
 			, name.sin_port & 0xff, name.sin_port >> 8);
@@ -1015,7 +998,7 @@ void handler(Session *ss, OVX* pox)
 		for (; CmndTable[iCmnd].cmnd_ != ((const char *)0); ++iCmnd) {
 			if (strcmp(ss->cmnd_, CmndTable[iCmnd].cmnd_) == 0)
 			{
-				ss->iCmnd = iCmnd;
+				ss->funCmnd=CmndTable[iCmnd].hndl_;
 				goto DoCommand;
 			}
 		}
@@ -1025,7 +1008,7 @@ void handler(Session *ss, OVX* pox)
 		goto done;
 	}
 	DoCommand:
-	CmndTable[ss->iCmnd].hndl_(ss, pox);
+	ss->funCmnd(ss, pox);
 
 	if (ss->state){
 		print_debug("command '%s' line '%d'",
