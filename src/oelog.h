@@ -37,40 +37,34 @@ if (!(func)){ \
 
 int print_log(unsigned short color, const char *format, ...);
 
-#define LOG_DEBUG 0
-#define LOG_MSG   1
-#define LOG_WARN  2
-#define LOG_ERR   3
+#define LOG_DEBUG 3
+#define LOG_MSG   2
+#define LOG_WARN  1
+#define LOG_ERR   0
 
-#if LOG_LEVEL > LOG_DEBUG
+#if LOG_LEVEL < LOG_DEBUG
 #define print_debug(format,...)
 #else
 #define print_debug(format,...) print_log(COLOR_DEBUG, format, __VA_ARGS__)
 #endif
 
-#if LOG_LEVEL > LOG_MSG
+#if LOG_LEVEL < LOG_MSG
 #define print_info(format,...)
 #else
 #define print_info(format,...) print_log(COLOR_INFO, format, __VA_ARGS__)
 #endif
 
-#if LOG_LEVEL > LOG_WARN
+#if LOG_LEVEL < LOG_WARN
 #define print_warning(format,...)
 #else
 #define print_warning(format,...) print_log(COLOR_WARNING, format, __VA_ARGS__)
 #endif
 
-#if LOG_LEVEL > LOG_ERR
+#if LOG_LEVEL < LOG_ERR
 #define print_error(format,...)
 #else
 #define print_error(format,...) print_log(COLOR_ERROR, format, __VA_ARGS__)
 #endif
-
-#define LOG_DEBUG 0
-#define LOG_MSG   1
-#define LOG_WARN  2
-#define LOG_ERR   3
-
 
 #define COLOR_NONE 7
 #define COLOR_ERROR 12

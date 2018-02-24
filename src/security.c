@@ -1,4 +1,4 @@
-#define _WIN32_WINNT 0x0600
+п»ї#define _WIN32_WINNT 0x0600
 
 #include "networking.h"
 #include "oelog.h"
@@ -28,19 +28,19 @@ void getOwnerGroup(wchar_t *chFileName, char *ownerGrp)
 	pSD = (PSECURITY_DESCRIPTOR)malloc(dwLength);
 
 	ChkExit(GetFileSecurity(
-		chFileName,      // имя файла
+		chFileName,      // РёРјСЏ С„Р°Р№Р»Р°
 		GROUP_SECURITY_INFORMATION |
-		OWNER_SECURITY_INFORMATION,    // информация, которую нужно получить
-		pSD,             // адрес буфера для дескриптора безопасности
-		dwLength,        // длина буфера
-		&dwLength), free(pSD); return);      // необходимая длина
+		OWNER_SECURITY_INFORMATION,    // РёРЅС„РѕСЂРјР°С†РёСЏ, РєРѕС‚РѕСЂСѓСЋ РЅСѓР¶РЅРѕ РїРѕР»СѓС‡РёС‚СЊ
+		pSD,             // Р°РґСЂРµСЃ Р±СѓС„РµСЂР° РґР»СЏ РґРµСЃРєСЂРёРїС‚РѕСЂР° Р±РµР·РѕРїР°СЃРЅРѕСЃС‚Рё
+		dwLength,        // РґР»РёРЅР° Р±СѓС„РµСЂР°
+		&dwLength), free(pSD); return);      // РЅРµРѕР±С…РѕРґРёРјР°СЏ РґР»РёРЅР°
 
 	ChkExit(GetSecurityDescriptorOwner(
 		pSD,
 		&pSidOwner,
 		&bOwnerDefaulted));
 
-	// получаем SD первичной группы владельца объекта
+	// РїРѕР»СѓС‡Р°РµРј SD РїРµСЂРІРёС‡РЅРѕР№ РіСЂСѓРїРїС‹ РІР»Р°РґРµР»СЊС†Р° РѕР±СЉРµРєС‚Р°
 	ChkExit(GetSecurityDescriptorGroup(
 		pSD,
 		&pSidGroup,

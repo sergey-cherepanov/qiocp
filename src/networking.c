@@ -65,12 +65,14 @@ void event_dispatch(void)
 
 	for (;;){
 
-		ChkExit(GetQueuedCompletionStatus(
+		CHECK_ERR(GetQueuedCompletionStatus(
 			ep_fd,
 			&cbTransferred,
 			(PULONG_PTR)&completionKey,
 			(LPOVERLAPPED*)&pox,
-			INFINITE), assert(cbTransferred == pox->ov.InternalHigh);goto Next);
+			INFINITE)
+			, if(64==ierr)break; 
+			, assert(cbTransferred == pox->ov.InternalHigh); goto Next);
 		p_xi(pox->ev_callback, cbTransferred);
 		p_xx(completionKey, pox);
 		assert(cbTransferred == pox->ov.InternalHigh);
@@ -204,6 +206,7 @@ void rwc_cplt_handler(Session *ss, OVX* pox)
 
 	p_xx(ss, pox);
 	if (0 == pox->ov.InternalHigh){
+		close_conn(ss->conn);
 		free(pConn);
 		free(ss);
 		return;
@@ -367,7 +370,10 @@ void close_conn(connection_t *pConn){
 		pConn->read_bufsize = 0;
 
 		if (INVALID_SOCKET != fd){
+#if LOG_LEVEL < LOG_MSG
+#else
 			print_socket("close_conn", fd);
+#endif
 			ChkExit(!closesocket(fd));
 		}
 		pConn->ox.fd = INVALID_SOCKET;
