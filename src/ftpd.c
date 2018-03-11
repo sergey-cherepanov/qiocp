@@ -225,13 +225,20 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 		if (!WriteFile(ss->handle, ss->sdt->wb.buf, ss->sdt->recvLen, &cbWritten,
 			&ss->sdt->ox.ov))
 		{
-			ChkExit(ERROR_IO_PENDING == GetLastError(), close_conn(ss->sdt));
+			ChkExit(ERROR_IO_PENDING == GetLastError(),
+				send_msg(ss->conn, "451 Requested action aborted. Local error in processing.\r\n");
+			goto FreeAll);
 		}
 		else
 		{
 			print_debug("file write %ld bytes\n", cbWritten);
 		}
 		crReturn;
+		if (ss->sdt->ox.err)
+		{
+			send_msg(ss->conn, "451 Requested action aborted. Local error in processing.\r\n");
+			goto FreeAll;
+		}
 		{
 			ULONGLONG *pOffset = (ULONGLONG*)&ss->sdt->ox.ov.Offset;
 			*pOffset += ss->sdt->recvLen;
@@ -242,11 +249,11 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 		*pOffset += ss->sdt->recvLen;
 		p_ii(*pOffset, ss->sdt->recvLen);
 	}
+	send_msg(ss->conn, "226 Transfer complete\r\n");
+FreeAll:
 	free(ss->sdt->wb.buf); ss->sdt->wb.buf = 0;
-
 	ChkExit(CloseHandle(ss->handle));
 	ss->handle = INVALID_HANDLE_VALUE;
-	send_msg(ss->conn, "226 Transfer complete\r\n");
 Finally:
 	ss->sdt->ox.ov.Offset = 0; ss->sdt->ox.ov.OffsetHigh = 0;
 	close_conn(ss->sdt);  ss->sdt = 0;
@@ -871,7 +878,7 @@ CMD(NOOP)
 CMD(QUIT)
 {
 	close_conn(ss->sdt); ss->sdt = 0;
-	/*close_conn(ss->conn);*/
+	close_conn(ss->conn); ss->conn = 0;
 	CloseHandle(ss->phToken);
 }
 CMD(USER)	/* USER <SP> <username> <CRLF> */

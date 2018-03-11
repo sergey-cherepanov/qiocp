@@ -42,3 +42,13 @@ int print_log(WORD clr, const char *format, ...)
 	va_end(ap);
 	return ret;
 }
+
+void printLastErr(char* file, char* func, int line, char* expr)
+{
+	WCHAR *sErr = NULL; DWORD ierr = GetLastError();
+	FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+		NULL, ierr, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (WCHAR*)&sErr, 0, NULL);
+	print_error("in %s func %s line %d %s returns error %d %S\n"
+		, file, func, line, expr, ierr, sErr);
+	LocalFree(sErr);
+}

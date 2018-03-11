@@ -60,27 +60,45 @@ void event_dispatch(void)
 {
 	ULONGLONG t1=0, t2=0, tMax = 0;
 		DWORD cbTransferred=0;
-		ULONG_PTR completionKey=0;
-		OVX *pox = NULL; 
 
 	for (;;){
+		int err = 0;
+		OVX *pox = NULL;
+		ULONG_PTR completionKey=0;
 
-		CHECK_ERR(GetQueuedCompletionStatus(
+		if (GetQueuedCompletionStatus(
 			ep_fd,
 			&cbTransferred,
 			(PULONG_PTR)&completionKey,
 			(LPOVERLAPPED*)&pox,
-			INFINITE)
-			, if(64==ierr)break; 
-			, assert(cbTransferred == pox->ov.InternalHigh); goto Next);
+			INFINITE))
+		{
+			pox->err = 0;
+		}
+		else
+		{
+			err = GetLastError();
+			pox->err = 0;
+
+		}
+		assert(cbTransferred == pox->ov.InternalHigh);
 		p_xi(pox->ev_callback, cbTransferred);
 		p_xx(completionKey, pox);
-		assert(cbTransferred == pox->ov.InternalHigh);
 		t1 = GetTickCount();
-		do_cmplt(completionKey, pox);
+		if (pox)
+		{
+			if (0 == err || ERROR_NETNAME_DELETED == err || ERROR_DISK_FULL == err)
+			{
+				pox->err = err;
+				do_cmplt(completionKey, pox);
+				goto Next;
+			}
+		}
+		CHECK(!err);
+		assert(!"GetQueuedCompletionStatus Error");
+		Next:
 		t2 = GetTickCount();
 		tMax = max(tMax, t2 - t1);
-		Next:
 		print_debug("//// %llu tMax=%llu ////\n", t2 - t1, tMax);
 	}
 }
@@ -145,46 +163,15 @@ void launchRecv(connection_t *pConn)
 	}
 }
 
-void recv_cplt_handler(Session *ss, OVX* pox)
-{
-	connection_t* pConn=ss->conn;
-	static char delim[] = " \t\r\n";
-	char *pEnd;
-	char* token;
-	static char buf[MAX_PATH * 2];
-	char *pbuf = buf;
-
-	memmove(buf, pConn->wb.buf,pConn->recvLen);
-	buf[pConn->recvLen] = 0;
-
-	for (; (pEnd = strstr(pbuf, "\r\n")); pbuf = pEnd+2)
-	{
-		*pEnd = 0;
-		token = strtok(pbuf, delim);
-		if (token)
-		{
-			strcpy_s(ss->cmnd_, 5, token);
-			token = strtok(NULL, delim + 2);
-			if (token)
-			{
-				strcpy_s(ss->u8opts, 2*MAX_PATH, token);
-			}
-			ss->state = 0;
-			handler(ss,pox);
-		}
-	}
-	launchRecv(pConn);
-}
-
 void recv_data_cplt(Session *ss, OVX* pox)
 {
-	connection_t *pConn = (connection_t *)((char*)pox - offsetof(connection_t, ox));
+	connection_t *sdt = ss->sdt, *pConn = ss->conn;
 
-	p_xx(ss, pox->ov.InternalHigh);
-	pConn->recvLen = (DWORD)pox->ov.InternalHigh;
-
-	print_debug("data received %d bytes\n", pConn->recvLen);
 	if (ss->sdt){
+		p_xx(ss, pox->ov.InternalHigh);
+		sdt->recvLen = (DWORD)pox->ov.InternalHigh;
+
+		print_debug("data received %d bytes\n", sdt->recvLen);
 		if (ss->state && ss->sdt->ox.fd == pox->fd){
 			handler(ss, pox);
 		}
@@ -202,7 +189,7 @@ void recv_data_cplt(Session *ss, OVX* pox)
 
 void rwc_cplt_handler(Session *ss, OVX* pox)
 {
-	connection_t *pConn = (connection_t *)((char*)pox - offsetof(connection_t, ox));
+	connection_t *pConn = ss->conn;
 
 	p_xx(ss, pox);
 	if (0 == pox->ov.InternalHigh){
@@ -213,10 +200,37 @@ void rwc_cplt_handler(Session *ss, OVX* pox)
 	}
 
 	pConn->recvLen = (DWORD)pox->ov.InternalHigh;
-	pConn->wb.buf[pConn->recvLen] = '\0';
+	pConn->wb.buf[pox->ov.InternalHigh] = '\0';
 
 	print_debug("received %d bytes %s\n", pConn->recvLen, pConn->wb.buf);
-	recv_cplt_handler(ss, pox);
+	{
+		static char delim[] = " \t\r\n";
+		char *pEnd;
+		char* token;
+		static char buf[MAX_PATH * 2];
+		char *pbuf = buf;
+
+		memmove(buf, pConn->wb.buf, pox->ov.InternalHigh);
+		buf[pox->ov.InternalHigh] = 0;
+
+		for (; (pEnd = strstr(pbuf, "\r\n")); pbuf = pEnd + 2)
+		{
+			*pEnd = 0;
+			token = strtok(pbuf, delim);
+			if (token)
+			{
+				strcpy_s(ss->cmnd_, 5, token);
+				token = strtok(NULL, delim + 2);
+				if (token)
+				{
+					strcpy_s(ss->u8opts, 2 * MAX_PATH, token);
+				}
+				ss->state = 0;
+				handler(ss, pox);
+			}
+		}
+		if(ss->conn)launchRecv(pConn);
+	}
 
 	/*Socket has closed after QUIT command*/
 	pConn = ss->conn;
@@ -364,10 +378,12 @@ void close_conn(connection_t *pConn){
 	{
 		SOCKET fd = pConn->ox.fd;
 
-		if (pConn->read_buf)
-			free(pConn->read_buf);
-		pConn->read_buf = NULL;
-		pConn->read_bufsize = 0;
+		if (pConn->wb.buf)
+		{
+			free(pConn->wb.buf);
+			pConn->wb.buf = NULL;
+		}
+		pConn->wb.len = 0;
 
 		if (INVALID_SOCKET != fd){
 #if LOG_LEVEL < LOG_MSG

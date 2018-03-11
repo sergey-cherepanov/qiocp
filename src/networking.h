@@ -52,12 +52,8 @@ do{ \
 
 #define CHECK(func,...) do{\
 if (!(func)) {\
-	WCHAR *sErr = NULL; DWORD ierr = GetLastError(); \
-	FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, \
-	NULL, ierr, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (WCHAR*)&sErr, 0, NULL); \
-	print_error("in %s func %s line %d "#func" returns error %d %S\n" \
-	, __FILE__, __FUNCTION__, __LINE__, ierr, sErr); \
-	LocalFree(sErr); {__VA_ARGS__; } \
+	printLastErr(__FILE__, __FUNCTION__, __LINE__, #func); \
+	 {__VA_ARGS__; } \
 }} while (0)
 
 #define CHECK_ERR(func,cond,...) do{\
@@ -109,6 +105,7 @@ typedef struct OVX
 	SOCKET fd;
 	struct connection_t *conn;
 	WSABUF wb;
+	long err;
 }OVX;
 
 extern OVX ovListen;
@@ -122,15 +119,8 @@ typedef struct connection_t
 	DWORD recvLen;
 	DWORD BytesSEND;
 
-  size_t wbuf_offset;
-	union {
-		struct {
-			ULONG read_bufsize;
-			void *read_buf;
-		};
-		WSABUF wb;
-	};
-	WSABUF wbs;
+	size_t wbuf_offset;
+	WSABUF wb;
 
 	SOCKADDR_IN local;
 	char dummy1[16];

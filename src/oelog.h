@@ -72,4 +72,6 @@ int print_log(unsigned short color, const char *format, ...);
 #define COLOR_INFO 11
 #define COLOR_DEBUG 10
 
+void printLastErr(char* file, char* func, int line, char* expr);
+
 #endif                          /* LOG_H_ */
