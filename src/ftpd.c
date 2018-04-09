@@ -129,15 +129,20 @@ void send_msg(connection_t *conn, const char *format, ...)
 #undef CMD
 #define CMD(A) void ftpdCmnd_##A(Session *ss, OVX* pov)
 
-void makePathW(Session *ss, wchar_t path[])
+void makePathW(Session *ss, wchar_t *path)
 {
-	size_t len = 0;
-	if ('/' != ss->u8opts[0])
+	if (strlen(ss->u8opts) == 0)
 	{
-		len = wcslen(ss->sCurrPath);
-		wcscpy(path, ss->sCurrPath);
+		wcscpy_s(path, sizeof ss->sCurrPath / sizeof ss->sCurrPath[0], ss->sCurrPath);
+	}
+	else {
+		size_t len = 0;
+		if ('/' != ss->u8opts[0])
 		{
-			switch (path[len - 1]){
+			len = wcslen(ss->sCurrPath);
+			wcscpy_s(path, sizeof ss->sCurrPath / sizeof ss->sCurrPath[0], ss->sCurrPath);
+			switch (path[len - 1])
+			{
 			case L'\\':break;
 			case L'/': path[len - 1] = L'\\'; break;
 			default:
@@ -145,21 +150,36 @@ void makePathW(Session *ss, wchar_t path[])
 				path[++len] = 0;
 			}
 		}
+		ChkExit(MultiByteToWideChar(CP_UTF8, 0, ss->u8opts, -1, path + len, 2 * MAX_PATH - (int)len));
+		for (; path[len] && len < 2*MAX_PATH; ++len)
+		{
+			if (L'/' == path[len]){
+				path[len] = '\\';
+			}
+		}
+		if (wcslen(path) >= 2 && L'\\' == path[0] && islower(path[1]))
+		{
+			path[0] = path[1]; path[1] = L':';
+		}
 	}
-	ChkExit(MultiByteToWideChar(CP_UTF8, 0, ss->u8opts, -1, path + len, MAX_PATH - (int)len));
 }
 
 
-void makePath(Session *ss, wchar_t path[], char utf8[])
+void makePath(Session *ss, wchar_t *path, char *utf8)
 {
 	char *pw;
 	makePathW(ss, path);
-	ChkExit(WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8 , 2 * MAX_PATH, 0, 0));
-	for (pw = utf8; *pw && pw < utf8 + 2*MAX_PATH; ++pw){
+	ChkExit(WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8 , 4 * MAX_PATH, 0, 0));
+	for (pw = utf8; *pw && pw < utf8 + 4*MAX_PATH; ++pw){
 		if ('\\' == *pw){
 			*pw = '/';
 		}
 	}
+	if (strlen(utf8)>=2 && ':' == utf8[1] && islower(utf8[0]))
+	{
+		utf8[1] = utf8[0]; utf8[0] = L'/';
+	}
+
 }
 
 CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
@@ -173,18 +193,23 @@ CMD(STOR)	/* STOR <SP> <pathname> <CRLF> */
 		crReturn;
 	}
 	{
-		char utf8[2 * MAX_PATH];
-		wchar_t path[MAX_PATH];
+		char utf8[4 * MAX_PATH];
+		struct {
+			wchar_t pre[4];
+			wchar_t path[2 * MAX_PATH];
+		}Path = { { '\\', '\\', '?', '\\' } };
 
-		makePath(ss, path, utf8);
+		makePath(ss, Path.path, utf8);
 		print_debug("STOR file %s\n", utf8);
 		ChkExit(ImpersonateLoggedOnUser(ss->phToken));
-		if (INVALID_HANDLE_VALUE == (ss->handle = CreateFile(path, GENERIC_WRITE, 0, NULL,
-			CREATE_ALWAYS, FILE_FLAG_OVERLAPPED, 0))){
-			send_msg(ss->conn, "451 Requested action aborted. Local error in processing.\r\n");
-			RevertToSelf();
-			goto Finally;
-		}
+		CHECK_ERR(INVALID_HANDLE_VALUE != (ss->handle = CreateFile(Path.pre, GENERIC_WRITE, 0, NULL,
+			CREATE_ALWAYS, FILE_FLAG_OVERLAPPED, 0)),
+			switch (ierr){
+			case 3:
+				send_msg(ss->conn, "451 Requested action aborted. Local error in processing.\r\n");
+				RevertToSelf();
+				goto Finally;
+		});
 		RevertToSelf();
 	}
 	ChkExit(CreateIoCompletionPort(ss->handle, ep_fd, (ULONG_PTR)ss, 0));
@@ -271,8 +296,8 @@ CMD(RETR)	/* RETR <SP> <pathname> <CRLF> */
 		ss->sdt->ovs.ov.Offset = 0; ss->sdt->ovs.ov.OffsetHigh = 0;
 		send_msg(ss->conn, "125 Data connection already open; transfer starting.\r\n");
 		{
-			char utf8[2 * MAX_PATH];
-			wchar_t path[MAX_PATH];
+			char utf8[4 * MAX_PATH];
+			wchar_t path[2 * MAX_PATH];
 
 			makePath(ss, path, utf8);
 			print_debug("retr file %s\n", utf8);
@@ -421,19 +446,23 @@ enum {
 
 static struct tm systime;
 
-void timeStr(Session *ss, WIN32_FIND_DATA *s_stat_ptr, char *sTime)
+time_t FileTimeToTime64(const FILETIME *ft)
+{
+	return
+		(0x100000000ULL * ft->dwHighDateTime + ft->dwLowDateTime) / 10000000
+		- 11644473600ULL;
+}
+
+void timeStr(Session *ss, time_t ftime, char *sTime)
 {
 	struct tm tmFile = { 0 };
 	char *mmm, *dd, *hhmm, *yyyy;
 	char tokens[32];
 	{
 		int len;
-		time_t ftime = 
-			(0x100000000ULL * s_stat_ptr->ftLastWriteTime.dwHighDateTime + s_stat_ptr->ftLastWriteTime.dwLowDateTime) / 10000000
-			- 11644473600ULL;
-
-		ChkExit(0 == _gmtime64_s(&tmFile, &ftime),
-			strcpy(sTime, "Jan 01 1980"); return);
+		if (ftime < 0)
+			ftime = 0;
+		_gmtime64_s(&tmFile, &ftime);
 		asctime_s(tokens, 32, &tmFile);
 		len = (int)strlen(tokens);
 		tokens[--len] = 0;
@@ -534,7 +563,8 @@ static void FileNameStr(Session* ss, WIN32_FIND_DATA *findData, WCHAR *s_path
 	if ((FILE_ATTRIBUTE_REPARSE_POINT & findData->dwFileAttributes)
 		&& (IO_REPARSE_TAG_SYMLINK & findData->dwReserved0))
 	{
-		/*if (IsReparseTagNameSurrogate(findData->dwFileAttributes))*/{
+		/*if (IsReparseTagNameSurrogate(findData->dwFileAttributes))*/
+		{
 			WCHAR s_temp[MAX_PATH];
 			HANDLE hF;
 			size_t len = wcslen(s_path) - 1; /*remove last character '*' */
@@ -587,71 +617,98 @@ void getFilePermission(wchar_t fullPathName[], char *secur)
 CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 {
 	__time64_t time64;
-		WIN32_FIND_DATA findData;
+	WIN32_FIND_DATA findData;
 
-		crBegin;
-		send_msg(ss->conn, "150 Opening ASCII mode data connection for file list\r\n");
-		while (!ss->sdt){
-			crReturn;
-		}
-		p_xx(ss->sdt, ss->sdt->ox.fd);
-		{
-			unsigned opts = 0;
-			char *p = ss->u8opts;
- 
-			ss->file_name[0] = 0;
-			if ('-' == *p){
-				for (++p;; ++p){
-					switch (*p){
-					default:
-						goto SyntaxError;
-					case ' ': goto Parse_Path;
-					case '\0': goto OPT_OK;
-					case 'l': opts |= OPT_l; break;
-						case 'a': opts |= OPT_a; break;
-						case 'p': opts |= OPT_p; break;
-						case 'F': opts |= OPT_F; break;
-						case 'R': opts |= OPT_R; break;
-					}
+	crBegin;
+	send_msg(ss->conn, "150 Opening ASCII mode data connection for file list\r\n");
+	while (!ss->sdt){
+		crReturn;
+	}
+	p_xx(ss->sdt, ss->sdt->ox.fd);
+	{
+		unsigned opts = 0;
+		char *p = ss->u8opts;
+
+		ss->file_name[0] = 0;
+		if ('-' == *p){
+			for (++p;; ++p){
+				switch (*p){
+				default:
+					goto SyntaxError;
+				case ' ': goto Parse_Path;
+				case '\0': goto OPT_OK;
+				case 'l': opts |= OPT_l; break;
+				case 'a': opts |= OPT_a; break;
+				case 'p': opts |= OPT_p; break;
+				case 'F': opts |= OPT_F; break;
+				case 'R': opts |= OPT_R; break;
 				}
-				goto Parse_Path;
-				SyntaxError:
-				send_msg(ss->conn, "501 Syntax error in parameters or arguments.\r\n");
-				goto Finally;
-				crBreak;
 			}
-		Parse_Path:
-			ChkExit(MultiByteToWideChar(CP_UTF8, 0, ++p, -1, 
-				ss->file_name, sizeof ss->file_name / sizeof ss->file_name[0]));
-		OPT_OK:
-			ss->opts = opts;
+			goto Parse_Path;
+		SyntaxError:
+			send_msg(ss->conn, "501 Syntax error in parameters or arguments.\r\n");
+			goto Finally;
+			crBreak;
 		}
+	Parse_Path:
+		ChkExit(MultiByteToWideChar(CP_UTF8, 0, ++p, -1,
+			ss->file_name, sizeof ss->file_name / sizeof ss->file_name[0]));
+	OPT_OK:
+		ss->opts = opts;
+	}
+	time(&time64);
+	_gmtime64_s(&systime, &time64);
+	{
+		wchar_t *pch;
+		wcscpy_s(ss->file_name, MAX_PATH, ss->sCurrPath);
+		for (pch = ss->file_name; *pch; ++pch)
 		{
-			wchar_t *pch;
-			wchar_t *s_path = ss->sCurrPath;
-			wcscpy_s(ss->file_name, MAX_PATH, s_path);
-			for (pch = ss->file_name; *pch; ++pch)
+			if (L'/' == *pch)
+				*pch = L'\\';
+		}
+		if (L'\\' != *(pch - 1))
+			*pch++ = L'\\';
+		*pch = L'*';
+		*++pch = L'\0';
+	}
+	if (0 == wcscmp(L"\\*", ss->file_name))
+	{
+		char u8[2 * MAX_PATH];
+		char fileTime[64];
+
+		wcscpy(ss->file_name, L"a:\\");
+		for (; ss->file_name[0] <= L'z'; ++ss->file_name[0])
+		{
+			UINT ret;
+			char ownerGroup[MAX_PATH] = "ftp ftp";
+			char secur[] = "d---------+";
+
+			if ((ret = GetDriveType(ss->file_name)) > DRIVE_NO_ROOT_DIR)
 			{
-				if (L'/' == *pch)
-					*pch = L'\\';
+				getFilePermission(ss->file_name, secur);
+				timeStr(ss, 0LL, fileTime);
+				*((wchar_t*)&u8[0]) = ss->file_name[0];
+				send_msg(ss->sdt, "%s 1 %s %10llu %s %s\r\n",
+					secur, ownerGroup,
+					0ULL, fileTime, u8);
+				crReturn;
 			}
-			if (L'\\' != *(pch - 1))
-				*pch++ = L'\\';
-			*pch = L'*';
-			*++pch = L'\0';
+		}
+	}
+	else
+	{
+		{
 			ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 			CHECK(INVALID_HANDLE_VALUE != (ss->handle = FindFirstFileW(ss->file_name, &findData)),
 				RevertToSelf();
-				findData.cFileName[0] = L'\0';
-				send_msg(ss->conn, "450 Requested file action not taken. File unavailable(e.g., file busy).\r\n");
-				goto Finally;
+			findData.cFileName[0] = L'\0';
+			send_msg(ss->conn, "450 Requested file action not taken. File unavailable(e.g., file busy).\r\n");
+			goto Finally;
 			);
 			RevertToSelf();
 		}
-		time(&time64);
-		_gmtime64_s(&systime, &time64);
 		do {
-			if (OPT_a & ss->opts || !(FILE_ATTRIBUTE_HIDDEN & findData.dwFileAttributes)) 
+			if (OPT_a & ss->opts || !(FILE_ATTRIBUTE_HIDDEN & findData.dwFileAttributes))
 			{
 				char u8[2 * MAX_PATH];
 				char secur[] = "----------+";
@@ -661,6 +718,7 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 				wchar_t chFileName[MAX_PATH];
 
 				wcscpy(chFileName, ss->sCurrPath);
+				wcscat(chFileName, L"\\");
 				wcscat(chFileName, findData.cFileName);
 
 				/*getOwnerGroup(chFileName, ownerGroup);*/
@@ -668,7 +726,7 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 				if (FILE_ATTRIBUTE_REPARSE_POINT & findData.dwFileAttributes) {
 					secur[0] = 'l';
 				}
-				timeStr(ss, &findData, fileTime);
+				timeStr(ss, FileTimeToTime64(&findData.ftLastWriteTime), fileTime);
 				FileNameStr(ss, &findData, ss->file_name, &u8[0]);
 
 				send_msg(ss->sdt, "%s 1 %s %10llu %s %s\r\n",
@@ -678,9 +736,10 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 			}
 		} while (FindNextFile(ss->handle, &findData));
 		ChkExit(ERROR_NO_MORE_FILES == GetLastError());
-		send_msg(ss->conn, "250 Requested file action okay, completed.\r\n");
 		FindClose(ss->handle);
 		ss->handle = INVALID_HANDLE_VALUE;
+	}
+	send_msg(ss->conn, "250 Requested file action okay, completed.\r\n");
 	Finally:
 		close_conn(ss->sdt); ss->sdt = 0;
 		crFinish;
@@ -688,8 +747,8 @@ CMD(LIST)	/* LIST [<SP> <pathname>] <CRLF> */
 
 CMD(DELE)
 {
-	char utf8[2 * MAX_PATH];
-	wchar_t path[MAX_PATH];
+	char utf8[4 * MAX_PATH];
+	wchar_t path[2 * MAX_PATH];
 
 	ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 	makePath(ss, path, utf8);
@@ -703,8 +762,8 @@ CMD(DELE)
 
 CMD(RMD)
 {
-	char utf8[2 * MAX_PATH];
-	wchar_t path[MAX_PATH];
+	char utf8[4 * MAX_PATH];
+	wchar_t path[2 * MAX_PATH];
 
 	ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 	makePath(ss, path, utf8);
@@ -718,8 +777,8 @@ CMD(RMD)
 
 CMD(MKD)
 {
-	char utf8[2 * MAX_PATH];
-	wchar_t path[MAX_PATH];
+	char utf8[4 * MAX_PATH];
+	wchar_t path[2 * MAX_PATH];
 
 	ChkExit(ImpersonateLoggedOnUser(ss->phToken));
 	makePath(ss, path, utf8);
@@ -741,25 +800,41 @@ CMD(PWD)
 			*pu = '/';
 		}
 	}
+	if (strlen(utf8)>1 && ':' == utf8[1])
+	{
+		utf8[1] = utf8[0];
+		utf8[0] = '/';
+	}
 	send_msg(ss->conn, "257 \"%s\" is current directory.\r\n", utf8);
 }
 
 CMD(CWD)
 {
-	char utf8[2 * MAX_PATH];
-	wchar_t path[MAX_PATH];
+	char utf8[4 * MAX_PATH];
+	wchar_t path[2 * MAX_PATH];
+	DWORD dwFileConst = 0;
 
 	makePath(ss, path, utf8);
-	if (FILE_ATTRIBUTE_DIRECTORY & GetFileAttributes(path)){
-		wchar_t *p;
+	dwFileConst = GetFileAttributes(path);
+	if (INVALID_FILE_ATTRIBUTES == dwFileConst)
+	{
+		dwFileConst = 0;
+	}
+	if (INVALID_FILE_ATTRIBUTES != dwFileConst && FILE_ATTRIBUTE_DIRECTORY & dwFileConst)
+	{
+		/*wchar_t *p;
 		for (p = path; *p; ++p){
 			if (L'/' == *p){
 				*p = L'\\';
 			}
 		}
 		if (L'\\' != path[wcslen(path)-1])
-			wcscat(path, L"\\");
+			wcscat(path, L"\\");*/
 		wcscpy(ss->sCurrPath, path);
+		if (wcslen(ss->sCurrPath)>1 && L'\\'==ss->sCurrPath[0])
+		{
+			ss->sCurrPath[0] = ss->sCurrPath[1]; ss->sCurrPath[1] = L':';
+		}
 		send_msg(ss->conn, "250 CWD successful. \"%s\" is current directory.\r\n", utf8);
 	}
 	else{
@@ -770,25 +845,16 @@ CMD(CDUP)
 {
 	char utf8[MAX_PATH]; /*WCHAR path[MAX_PATH];*/
 	size_t len = wcslen(ss->sCurrPath);
-	WCHAR *pwc=wcsrchr(ss->sCurrPath, L'\\');
-	if (NULL == pwc)
-	{
-	}
-	else {
-		if(ss->sCurrPath + len-1 == pwc){
-			*pwc = 0;
-			pwc=wcsrchr(ss->sCurrPath, L'\\');
-		}
-		if (NULL == pwc)
-		{
-		}
-		else if (ss->sCurrPath == pwc){
-			*(pwc+1) = 0;
-		}
-		else {
-			*pwc = 0;
-		}
-	}
+	ChkExit(len < sizeof ss->sCurrPath / sizeof ss->sCurrPath[0]);
+	int i = len-1;
+	for (; L'\\' == ss->sCurrPath[i] && i > 0; --i)
+		ss->sCurrPath[i] = 0;
+	for (; L'\\' != ss->sCurrPath[i] && i >= 0; --i)
+		ss->sCurrPath[i] = 0;
+	for (; L'\\' == ss->sCurrPath[i] && i >= 0; --i)
+		ss->sCurrPath[i] = 0;
+	if (0 == ss->sCurrPath[0])
+		ss->sCurrPath[0] = L'\\';
 	
 	ChkExit(WideCharToMultiByte(CP_UTF8, 0, ss->sCurrPath, -1, utf8, sizeof utf8, 0, 0));
 	{
@@ -797,6 +863,11 @@ CMD(CDUP)
 			if ('\\' == *pu){
 				*pu = '/';
 			}
+		}
+		if (strlen(utf8)>1 && ':' == utf8[1])
+		{
+			utf8[1] = utf8[0];
+			utf8[0] = '/';
 		}
 	}
 	send_msg(ss->conn, "200 Command okay.\r\n");
@@ -824,8 +895,8 @@ CMD(PASV)	/* PASV <CRLF> */
 CMD(SIZE)
 {
 	struct _stat64 stat = { 0 };
-	char utf8[2 * MAX_PATH];
-	wchar_t path[MAX_PATH];
+	char utf8[4 * MAX_PATH];
+	wchar_t path[2 * MAX_PATH];
 
 	makePath(ss, path, utf8);
 	if(!_wstati64(path, &stat))

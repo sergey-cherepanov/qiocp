@@ -47,12 +47,12 @@ do{ \
 	print_error("in %s func %s line %d "#func" returns error %d %S" \
 	, __FILE__, __FUNCTION__, __LINE__, ierr, sErr); \
 	LocalFree(sErr); {__VA_ARGS__; } \
-{assert(L"ChkExit"); exit(ierr); } \
+{assert(!L"ChkExit"); exit(ierr); } \
 } while (0)
 
 #define CHECK(func,...) do{\
 if (!(func)) {\
-	printLastErr(__FILE__, __FUNCTION__, __LINE__, #func); \
+	printLastErr(__FILE__, __FUNCTION__, __LINE__, #func); assert(!L"CHECK"); \
 	 {__VA_ARGS__; } \
 }} while (0)
 
